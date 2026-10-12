@@ -248,14 +248,15 @@ func migratePOMWithModel(original []byte, path string, policy Policy, model *rep
 		if resolved == target {
 			continue
 		}
-		if current != "" && (!numericVersion(resolved) || !numericVersion(target)) {
+		order, comparable := compareArtifactVersions(coord, resolved, target)
+		if current != "" && !comparable {
 			findings = append(findings, Finding{"blocker", path, "cannot order qualified versions for " + coord + ": " + resolved + " -> " + target + "; pin the desired version manually"})
 			continue
 		}
-		if current != "" && compareVersions(resolved, target) > 0 {
+		if current != "" && order > 0 {
 			continue
 		}
-		if current == "" && resolved != "" && numericVersion(resolved) && numericVersion(target) && compareVersions(resolved, target) >= 0 {
+		if current == "" && resolved != "" && comparable && order >= 0 {
 			continue
 		}
 		before := data

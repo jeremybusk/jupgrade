@@ -379,7 +379,8 @@ func updateOwnedProperties(contents map[string][]byte, policy Policy) ([]Change,
 			}
 			v := m.version(p, n)
 			target := policyVersion(policy, artifactKind(n), coordinate(p.data, n))
-			if v.err != nil || v.owner == nil || target == "" || !numericVersion(v.value) || !numericVersion(target) || compareVersions(v.value, target) >= 0 {
+			order, comparable := compareArtifactVersions(coordinate(p.data, n), v.value, target)
+			if v.err != nil || v.owner == nil || target == "" || !comparable || order >= 0 {
 				return
 			}
 			r := requests[*v.owner]
@@ -463,7 +464,8 @@ func unresolvedPolicyFindings(m *repositoryModel, policy Policy) []Finding {
 				findings = append(findings, Finding{"blocker", path, "requested upgrade for " + coord + " could not resolve its version: " + v.err.Error()})
 				return
 			}
-			if v.value != target && (!numericVersion(v.value) || !numericVersion(target) || compareVersions(v.value, target) < 0) {
+			order, comparable := compareArtifactVersions(coord, v.value, target)
+			if v.value != target && (!comparable || order < 0) {
 				findings = append(findings, Finding{"blocker", path, "requested upgrade for " + coord + " remains at " + v.value + "; target is " + target + " (owner " + v.declaration + ")"})
 			}
 		})

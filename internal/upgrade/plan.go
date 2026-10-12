@@ -250,6 +250,7 @@ func transformRepository(originals map[string][]byte, policy Policy) (map[string
 		return nil, nil, nil, err
 	}
 	findings = append(findings, unresolvedPolicyFindings(afterModel, policy)...)
+	findings = append(findings, jettyRuntimeFindings(afterModel)...)
 	return contents, changes, findings, nil
 }
 

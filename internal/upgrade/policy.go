@@ -21,6 +21,7 @@ func DefaultPolicy() Policy {
 	return Policy{
 		Java: 21,
 		Plugins: map[string]string{
+			"org.eclipse.jetty:jetty-maven-plugin":            "9.4.58.v20250814",
 			"org.apache.maven.plugins:maven-clean-plugin":     "3.4.1",
 			"org.apache.maven.plugins:maven-resources-plugin": "3.3.1",
 			"org.apache.maven.plugins:maven-compiler-plugin":  "3.13.0",
@@ -32,6 +33,37 @@ func DefaultPolicy() Policy {
 		},
 		Dependencies: map[string]string{}, Parents: map[string]string{},
 	}
+}
+
+var jettyRelease = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)*)(?:\.v([0-9]{8}))?$`)
+
+// Order only formats whose semantics we know. Jetty 9 releases append a build
+// date to their numeric release; Maven's arbitrary qualifier ordering remains
+// outside this comparator.
+func compareArtifactVersions(coordinate, a, b string) (int, bool) {
+	if numericVersion(a) && numericVersion(b) {
+		return compareVersions(a, b), true
+	}
+	if !strings.HasPrefix(coordinate, "org.eclipse.jetty:") && !strings.HasPrefix(coordinate, "org.eclipse.jetty.websocket:") {
+		return 0, false
+	}
+	aa, bb := jettyRelease.FindStringSubmatch(a), jettyRelease.FindStringSubmatch(b)
+	if len(aa) == 0 || len(bb) == 0 {
+		return 0, false
+	}
+	if order := compareVersions(aa[1], bb[1]); order != 0 {
+		return order, true
+	}
+	if (aa[2] == "") != (bb[2] == "") {
+		return 0, false
+	}
+	if aa[2] < bb[2] {
+		return -1, true
+	}
+	if aa[2] > bb[2] {
+		return 1, true
+	}
+	return 0, true
 }
 
 func ReadPolicy(path string) (Policy, error) {

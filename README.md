@@ -97,8 +97,15 @@ The default policy selects conservative Java 21 build-plugin versions:
 | Maven JAR | 3.4.2 |
 | Maven WAR | 3.4.0 |
 | JaCoCo | 0.8.12 |
+| Jetty Maven Plugin (legacy coordinate) | 9.4.58.v20250814 |
 
 These are explicit policy choices, not a claim that they are the latest releases.
+The Jetty pin applies to an existing `org.eclipse.jetty:jetty-maven-plugin`
+declaration; it does not introduce Jetty into other projects. It updates legacy
+Jetty within its 9.4 family and preserves the existing `javax` API stack. Newer
+numeric/datestamped Jetty versions are retained. A migration to Jetty 12 and its
+EE-specific coordinates needs a separate recipe. Jetty 9.4 is an EOL family;
+this compatibility rule does not constitute a migration to a supported server line.
 Compiler, Surefire, Clean, Resources, and the appropriate JAR/WAR lifecycle plugin
 are activated locally when absent. Other plugins are updated when declared.
 Visible newer numeric versions, including locally inherited plugin versions, are retained. External parent POM plugin versions
@@ -123,8 +130,42 @@ Unresolved requested upgrades are blockers. In particular, a requested versionle
 dependency controlled by an external BOM/parent no longer silently remains unchanged.
 Upgrade the owning BOM/parent with a policy rule, or supply a local management
 declaration. External BOM contents, inherited parent-profile overrides, compound
-expressions, and Maven-specific qualified-version ordering require further resolution
+expressions, and general Maven-specific qualified-version ordering require further resolution
 or review. Merely requesting a BOM version does not establish its member versions.
+Jetty's `9.4.x.vYYYYMMDD` releases are ordered by numeric release and build date;
+this exception is scoped to Jetty coordinates.
+
+## Legacy Jetty and Java 21 startup
+
+Java 21 classes use class-file major version 65. Jetty 9.4.48 bundles ASM 9.3,
+which cannot scan that bytecode during `jetty:run`. Maven compilation and tests
+can still pass; Jetty may open a connector while the webapp context is unavailable.
+The default plugin upgrade selects Jetty 9.4.58, whose published parent POM pins
+ASM 9.7.1. Source packages and Servlet/WebSocket API dependencies stay unchanged.
+
+Regenerate a custom policy from `jupgrade policy`, or add
+`org.eclipse.jetty:jetty-maven-plugin` with version `9.4.58.v20250814` to its
+`plugins` map. A policy that leaves the known old scanner in place now produces
+a blocker. An explicit plugin dependency on an old ASM can override the upgraded
+Jetty parser; that is also reported as a blocker. Such overrides should be reviewed
+and updated together, rather than adding ASM to application dependencies.
+
+After applying the plan, start the app and check the application URL:
+
+```sh
+cd /path/to/service
+mvn clean jetty:run
+# From another terminal, require a healthy application response:
+curl --fail http://localhost:8080/demo/
+```
+
+`verify` executes `clean verify`; it does not start `jetty:run` or prove that
+an application is serving requests. Runtime startup is a separate required check.
+The Jetty plugin must be downloaded when it is not already in your Maven cache.
+
+References: [Jetty 9.4.58 dependency versions](https://raw.githubusercontent.com/jetty/jetty.project/jetty-9.4.58.v20250814/pom.xml),
+[ASM's Java 21 support](https://asm.ow2.io/versions.html),
+[Jetty compatibility and support status](https://jetty.org/docs/jetty/12.1/index.html).
 
 ## Repeatability and recovery
 
@@ -192,3 +233,20 @@ JUPGRADE_INTEGRATION=1 go test -v ./internal/upgrade \
 
 Optional environment variables: `JUPGRADE_JAVA_HOME`, `JUPGRADE_MAVEN_REPO`, and
 `JUPGRADE_OFFLINE=1` for a fully populated local cache.
+
+## Jetty scanner regression
+
+The opt-in scanner test executes Jetty 9.4.48 against a Java 21 annotated servlet
+and WebSocket fixture. ASM 9.3 must reproduce `Unsupported class file major version
+65`; changing only ASM to 9.7 must make the context available and an in-memory HTTP
+request return 200. It uses Jetty's `LocalConnector`, so it needs no socket access.
+
+```sh
+JUPGRADE_JETTY_PARSER_INTEGRATION=1 go test -v ./internal/upgrade \
+  -run TestJettyJava21AnnotationScanningIntegration -count=1
+```
+
+This test requires cached Jetty 9.4.48 jars, ASM/ASM Commons/ASM Tree 9.3 and 9.7,
+Servlet API 3.1.0, WebSocket API 1.1, Annotation API 1.3.2, and SLF4J API 1.7.36.
+It isolates the scanner failure; it does not execute the Jetty 9.4.58 Maven plugin.
+Run the application's own startup check after downloading the upgraded plugin.
