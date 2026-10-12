@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -225,6 +226,9 @@ func readRepositoryPOMs(root string) (map[string][]byte, error) {
 func transformRepository(originals map[string][]byte, policy Policy) (map[string][]byte, []Change, []Finding, error) {
 	contents := map[string][]byte{}
 	for path, data := range originals {
+		if filepath.Base(path) != "pom.xml" {
+			continue
+		}
 		contents[path] = append([]byte(nil), data...)
 	}
 	changes, err := updateOwnedProperties(contents, policy)
@@ -235,7 +239,10 @@ func transformRepository(originals map[string][]byte, policy Policy) (map[string
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	var findings []Finding
+	findings, err := springBootMigrationFindings(contentsForPOMs(originals), policy)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	for _, path := range model.paths {
 		after, actions, issues, err := migratePOMWithModel(contents[path], path, policy, model)
 		if err != nil {
@@ -250,7 +257,18 @@ func transformRepository(originals map[string][]byte, policy Policy) (map[string
 		return nil, nil, nil, err
 	}
 	findings = append(findings, unresolvedPolicyFindings(afterModel, policy)...)
-	findings = append(findings, jettyRuntimeFindings(afterModel)...)
+	findings = append(findings, jettyRuntimeFindings(afterModel, policy.Java)...)
+	findings = append(findings, libraryRuntimeFindings(afterModel, policy.Java)...)
+	if policy.Maven != "" {
+		if original, ok := originals[mavenWrapperProperties]; ok {
+			after, actions, issues := migrateMavenWrapper(original, policy)
+			contents[mavenWrapperProperties] = after
+			changes = append(changes, actions...)
+			findings = append(findings, issues...)
+		} else {
+			findings = append(findings, Finding{"blocker", mavenWrapperProperties, "Maven target requires an existing .mvn/wrapper/maven-wrapper.properties; installing Maven or generating a wrapper is not automated"})
+		}
+	}
 	return contents, changes, findings, nil
 }
 
@@ -262,8 +280,15 @@ func CreatePlan(root string, policy Policy) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	p := Plan{Schema: 2, Root: root, Policy: policy, Inputs: map[string]string{}, Files: []File{}, Changes: []Change{}, Findings: []Finding{}}
-	originals, err := readRepositoryPOMs(root)
+	if err := requireMaven(root); err != nil {
+		return Plan{}, err
+	}
+	schema := 2
+	if policy.Maven != "" {
+		schema = 3
+	}
+	p := Plan{Schema: schema, Root: root, Policy: policy, Inputs: map[string]string{}, Files: []File{}, Changes: []Change{}, Findings: []Finding{}}
+	originals, err := readRepositoryInputs(root, policy)
 	if err != nil {
 		return p, err
 	}
@@ -271,7 +296,8 @@ func CreatePlan(root string, policy Policy) (Plan, error) {
 	if err != nil {
 		return p, err
 	}
-	p.Changes, p.Findings = changes, findings
+	p.Changes = append(p.Changes, changes...)
+	p.Findings = append(p.Findings, findings...)
 	var paths []string
 	for path := range originals {
 		paths = append(paths, path)
@@ -291,11 +317,20 @@ func CreatePlan(root string, policy Policy) (Plan, error) {
 	return p, nil
 }
 
+func runtimeJDKMismatch(pattern *regexp.Regexp, data []byte, target int) bool {
+	for _, match := range pattern.FindAllSubmatch(data, -1) {
+		if string(match[2]) != strconv.Itoa(target) {
+			return true
+		}
+	}
+	return false
+}
+
 var sourceRisks = []struct{ pattern, message string }{
 	{`\bjavax\.(xml\.bind|xml\.ws|activation)\b`, "JDK-removed Java EE API: provide compatible external libraries or a framework migration"},
 	{`\bsun\.misc\.(BASE64Encoder|BASE64Decoder)\b`, "removed Base64 API: migrate to java.util.Base64"},
-	{`\b(sun|com\.sun)\.`, "internal JDK API: review Java 21 access and availability"},
-	{`\.setAccessible\s*\(\s*true\s*\)`, "reflective access: test against Java 21 strong encapsulation"},
+	{`\b(sun|com\.sun)\.`, "internal JDK API: review target JDK access and availability"},
+	{`\.setAccessible\s*\(\s*true\s*\)`, "reflective access: test against target JDK strong encapsulation"},
 }
 
 func scanFindings(p *Plan) error {
@@ -303,7 +338,7 @@ func scanFindings(p *Plan) error {
 	for i, risk := range sourceRisks {
 		compiled[i] = regexp.MustCompile(risk.pattern)
 	}
-	runtimePin := regexp.MustCompile(`(?i)(java-version|jdk|openjdk|temurin|corretto|JAVA_HOME)[^\r\n]{0,60}\b(1\.8|8|11|17)\b`)
+	runtimePin := regexp.MustCompile(`(?i)(java-version|jdk|openjdk|temurin|corretto|JAVA_HOME)[^\r\n]{0,60}\b(1\.8|8|11|17|21|25)\b`)
 	return filepath.WalkDir(p.Root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -337,8 +372,8 @@ func scanFindings(p *Plan) error {
 					p.Findings = append(p.Findings, Finding{"warning", relative, sourceRisks[i].message})
 				}
 			}
-		} else if runtimePin.Match(data) || (entry.Name() == ".java-version" && strings.TrimSpace(string(data)) != "21") {
-			p.Findings = append(p.Findings, Finding{"warning", relative, "review runtime/CI JDK pin for Java 21; this file is not edited"})
+		} else if runtimeJDKMismatch(runtimePin, data, p.Policy.Java) || (entry.Name() == ".java-version" && strings.TrimSpace(string(data)) != strconv.Itoa(p.Policy.Java)) {
+			p.Findings = append(p.Findings, Finding{"warning", relative, fmt.Sprintf("review runtime/CI JDK pin for Java %d; this file is not edited", p.Policy.Java)})
 		}
 		return nil
 	})
@@ -387,8 +422,11 @@ func ReadPlan(path string) (Plan, error) {
 }
 
 func (p Plan) Validate() error {
-	if p.Schema != 1 && p.Schema != 2 {
+	if p.Schema != 1 && p.Schema != 2 && p.Schema != 3 {
 		return fmt.Errorf("unsupported plan schema %d", p.Schema)
+	}
+	if p.Policy.Maven != "" && p.Schema < 3 {
+		return fmt.Errorf("Maven wrapper policies require plan schema 3")
 	}
 	if err := p.Policy.Validate(); err != nil {
 		return err
@@ -416,8 +454,8 @@ func (p Plan) Validate() error {
 		if hash([]byte(file.Before)) != file.BeforeSHA || hash([]byte(file.After)) != file.AfterSHA || p.Inputs[file.Path] != file.BeforeSHA {
 			return fmt.Errorf("content/hash mismatch: %s", file.Path)
 		}
-		if filepath.Base(file.Path) != "pom.xml" {
-			return fmt.Errorf("this version edits pom.xml only")
+		if filepath.Base(file.Path) != "pom.xml" && !(p.Schema == 3 && p.Policy.Maven != "" && file.Path == mavenWrapperProperties) {
+			return fmt.Errorf("plan may edit only POMs and an explicitly targeted Maven wrapper")
 		}
 		// A plan is reviewable data, but should not become a generic arbitrary
 		// file writer when modified by hand.
@@ -432,9 +470,9 @@ func (p Plan) Validate() error {
 			}
 		}
 	}
-	if p.Schema == 2 {
+	if p.Schema >= 2 {
 		for relative, h := range p.Inputs {
-			if filepath.Base(relative) != "pom.xml" || seen[relative] {
+			if seen[relative] || (filepath.Base(relative) != "pom.xml" && !(p.Schema == 3 && p.Policy.Maven != "" && relative == mavenWrapperProperties)) {
 				continue
 			}
 			path, err := safePath(root, relative)

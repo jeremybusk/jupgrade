@@ -347,6 +347,9 @@ func Inspect(root string) (Inspection, error) {
 	if err != nil {
 		return Inspection{}, err
 	}
+	if err := requireMaven(root); err != nil {
+		return Inspection{}, err
+	}
 	contents, err := readRepositoryPOMs(root)
 	if err != nil {
 		return Inspection{}, err

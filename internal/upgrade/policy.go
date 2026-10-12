@@ -12,6 +12,8 @@ import (
 // Policy is a reviewed set of target versions, not a request for "latest".
 type Policy struct {
 	Java         int               `json:"java"`
+	Maven        string            `json:"maven,omitempty"`
+	MavenSHA256  string            `json:"maven_sha256,omitempty"`
 	Plugins      map[string]string `json:"plugins"`
 	Dependencies map[string]string `json:"dependencies"`
 	Parents      map[string]string `json:"parents"`
@@ -32,6 +34,55 @@ func DefaultPolicy() Policy {
 			"org.jacoco:jacoco-maven-plugin":                  "0.8.12",
 		},
 		Dependencies: map[string]string{}, Parents: map[string]string{},
+	}
+}
+
+// PolicyForJava returns pinned build defaults. It never resolves "latest".
+func PolicyForJava(java int) (Policy, error) {
+	p := DefaultPolicy()
+	p.Java = java
+	if java == 25 {
+		p.Plugins["org.jacoco:jacoco-maven-plugin"] = "0.8.14"
+	}
+	return p, p.Validate()
+}
+
+// AddPreset selects existing libraries only; Maven management/ownership rules
+// still apply. Framework families are deliberately excluded from this preset.
+func (p *Policy) AddPreset(name string) error {
+	switch name {
+	case "", "build":
+		return nil
+	case "common":
+		if p.Dependencies == nil {
+			p.Dependencies = map[string]string{}
+		}
+		rules := map[string]string{
+			"junit:junit":                      "4.13.2",
+			"org.projectlombok:lombok":         "1.18.46",
+			"org.apache.commons:commons-lang3": "3.20.0",
+			"commons-io:commons-io":            "2.20.0",
+			"org.junit:junit-bom":              "5.12.2",
+		}
+		for _, artifact := range []string{"junit-jupiter", "junit-jupiter-api", "junit-jupiter-engine", "junit-jupiter-params"} {
+			rules["org.junit.jupiter:"+artifact] = "5.12.2"
+		}
+		for _, artifact := range []string{"junit-platform-commons", "junit-platform-engine", "junit-platform-launcher"} {
+			rules["org.junit.platform:"+artifact] = "1.12.2"
+		}
+		asm := "9.7.1"
+		if p.Java == 25 {
+			asm = "9.9.1"
+		}
+		for _, artifact := range []string{"asm", "asm-commons", "asm-tree", "asm-analysis", "asm-util"} {
+			rules["org.ow2.asm:"+artifact] = asm
+		}
+		for coordinate, version := range rules {
+			p.Dependencies[coordinate] = version
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown preset %q; choose build or common", name)
 	}
 }
 
@@ -89,10 +140,17 @@ func ReadPolicy(path string) (Policy, error) {
 }
 
 var exactVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)*(?:[.-][A-Za-z0-9]+)*$`)
+var wildcardVersion = regexp.MustCompile(`(?:^|[.-])[xX](?:$|[.-])`)
 
 func (p Policy) Validate() error {
-	if p.Java != 21 {
-		return fmt.Errorf("this version supports target Java 21 only")
+	if p.Java != 17 && p.Java != 21 && p.Java != 25 {
+		return fmt.Errorf("supported Java targets are 17, 21, and 25; got %d", p.Java)
+	}
+	if p.Maven != "" && (!numericVersion(p.Maven) || compareVersions(p.Maven, "3.6.3") < 0 || compareVersions(p.Maven, "4.0.0") >= 0) {
+		return fmt.Errorf("Maven target must be an exact Maven 3 version >= 3.6.3 and < 4.0.0")
+	}
+	if p.MavenSHA256 != "" && (p.Maven == "" || !regexp.MustCompile(`^[a-fA-F0-9]{64}$`).MatchString(p.MavenSHA256)) {
+		return fmt.Errorf("maven_sha256 requires a Maven target and a 64-character SHA-256 digest")
 	}
 	if p.Plugins["org.apache.maven.plugins:maven-compiler-plugin"] == "" {
 		return fmt.Errorf("policy must pin org.apache.maven.plugins:maven-compiler-plugin")
@@ -103,7 +161,7 @@ func (p Policy) Validate() error {
 			if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
 				return fmt.Errorf("invalid groupId:artifactId: %q", coordinate)
 			}
-			if !exactVersion.MatchString(version) || strings.Contains(strings.ToUpper(version), "SNAPSHOT") {
+			if !exactVersion.MatchString(version) || wildcardVersion.MatchString(version) || strings.Contains(strings.ToUpper(version), "SNAPSHOT") {
 				return fmt.Errorf("%s must have an exact release version, got %q", coordinate, version)
 			}
 		}

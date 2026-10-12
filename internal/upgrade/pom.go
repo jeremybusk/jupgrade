@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -40,6 +41,7 @@ func migratePOM(original []byte, path string, policy Policy) ([]byte, []Change, 
 
 func migratePOMWithModel(original []byte, path string, policy Policy, model *repositoryModel) ([]byte, []Change, []Finding, error) {
 	data := append([]byte(nil), original...)
+	java := strconv.Itoa(policy.Java)
 	var changes []Change
 	var findings []Finding
 	record := func(before []byte, reason string) {
@@ -51,13 +53,23 @@ func migratePOMWithModel(original []byte, path string, policy Policy, model *rep
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	javaScalar := func(n *element, key string) string {
+		value := textAt(data, n, key)
+		if model != nil && strings.Contains(value, "${") {
+			resolved := model.resolve(model.poms[path], n, value)
+			if resolved.err == nil {
+				return resolved.value
+			}
+		}
+		return value
+	}
 	// Duplicate declarations are ambiguous and commonly rejected by Maven.
 	walk(root, func(n *element) {
 		if n.Name == "properties" {
-			for _, key := range []string{"maven.compiler.release", "maven.compiler.source", "maven.compiler.target", "java.version"} {
-				v := textAt(data, n, key)
-				if numericVersion(v) && compareVersions(v, "21") > 0 {
-					findings = append(findings, Finding{"blocker", path, key + " already exceeds Java 21; this tool does not downgrade Java"})
+			for _, key := range []string{"maven.compiler.release", "maven.compiler.source", "maven.compiler.target", "maven.compiler.testRelease", "maven.compiler.testSource", "maven.compiler.testTarget", "java.version"} {
+				v := javaScalar(n, key)
+				if numericVersion(v) && compareVersions(v, java) > 0 {
+					findings = append(findings, Finding{"blocker", path, key + " already exceeds Java " + java + "; this tool does not downgrade Java"})
 				}
 			}
 		}
@@ -73,28 +85,28 @@ func migratePOMWithModel(original []byte, path string, policy Policy, model *rep
 		if pluginNode(n) && coordinate(data, n) == "org.apache.maven.plugins:maven-compiler-plugin" {
 			walk(n, func(c *element) {
 				if c.Name == "configuration" {
-					for _, key := range []string{"release", "source", "target"} {
-						v := textAt(data, c, key)
-						if numericVersion(v) && compareVersions(v, "21") > 0 {
-							findings = append(findings, Finding{"blocker", path, "compiler " + key + " already exceeds Java 21"})
+					for _, key := range []string{"release", "source", "target", "testRelease", "testSource", "testTarget"} {
+						v := javaScalar(c, key)
+						if numericVersion(v) && compareVersions(v, java) > 0 {
+							findings = append(findings, Finding{"blocker", path, "compiler " + key + " already exceeds Java " + java})
 						}
 					}
 				}
 				if c.Name == "executable" || c.Name == "jdkToolchain" || c.Name == "compilerId" {
-					findings = append(findings, Finding{"blocker", path, "compiler uses " + c.Name + "; configure a Java 21 compiler explicitly"})
+					findings = append(findings, Finding{"blocker", path, "compiler uses " + c.Name + "; configure a Java " + java + " compiler explicitly"})
 				}
 			})
 		}
 		if pluginNode(n) && coordinate(data, n) == "org.apache.maven.plugins:maven-toolchains-plugin" {
-			findings = append(findings, Finding{"blocker", path, "Maven toolchain configuration requires review for Java 21"})
+			findings = append(findings, Finding{"blocker", path, "Maven toolchain configuration requires review for Java " + java})
 		}
 	})
 	// Target properties in every profile as well as the base project. Insert a
 	// release property at the project root even if none was previously declared.
 	if root.child("properties") == nil {
 		before := data
-		data = insert(data, root, tag(root, "properties", tag(root, "maven.compiler.release", "21")))
-		record(before, "set Java compiler release to 21")
+		data = insert(data, root, tag(root, "properties", tag(root, "maven.compiler.release", java)))
+		record(before, "set Java compiler release to "+java)
 	}
 	for {
 		root, err = parseXML(data)
@@ -108,7 +120,7 @@ func migratePOMWithModel(original []byte, path string, policy Policy, model *rep
 				return
 			}
 			for _, key := range []string{"maven.compiler.release", "maven.compiler.source", "maven.compiler.target", "maven.compiler.testRelease", "maven.compiler.testSource", "maven.compiler.testTarget", "java.version"} {
-				if c := n.child(key); c != nil && scalar(data, c) != "21" {
+				if c := n.child(key); c != nil && scalar(data, c) != java {
 					parent, name = n, key
 					return
 				}
@@ -121,11 +133,11 @@ func migratePOMWithModel(original []byte, path string, policy Policy, model *rep
 			break
 		}
 		before := data
-		data, err = setScalar(data, parent, name, "21")
+		data, err = setScalar(data, parent, name, java)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		record(before, "set "+name+" to 21")
+		record(before, "set "+name+" to "+java)
 	}
 	// Set explicit compiler configuration too; it can override the properties.
 	for {
@@ -144,7 +156,7 @@ func migratePOMWithModel(original []byte, path string, policy Policy, model *rep
 					return
 				}
 				for _, key := range []string{"release", "source", "target", "testRelease", "testSource", "testTarget"} {
-					if v := c.child(key); v != nil && scalar(data, v) != "21" {
+					if v := c.child(key); v != nil && scalar(data, v) != java {
 						parent, name = c, key
 						return
 					}
@@ -155,11 +167,11 @@ func migratePOMWithModel(original []byte, path string, policy Policy, model *rep
 			break
 		}
 		before := data
-		data, err = setScalar(data, parent, name, "21")
+		data, err = setScalar(data, parent, name, java)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		record(before, "set explicit compiler "+name+" to 21")
+		record(before, "set explicit compiler "+name+" to "+java)
 	}
 	// Apply each declaration once. Collect byte offsets, then change backwards
 	// so offsets for earlier declarations remain valid.

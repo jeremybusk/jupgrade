@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"jupgrade/internal/upgrade"
 )
@@ -24,45 +23,85 @@ func main() {
 	}
 }
 
+func printJSON(value any) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
+}
+
+func parseFlags(flags *flag.FlagSet, args []string) error {
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	return nil
+}
+
+func verifyPlan(p upgrade.Plan, options upgrade.VerifyOptions) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := upgrade.Verify(ctx, p, options); err != nil {
+		return err
+	}
+	fmt.Printf("Java %d build passed; migration produced zero further edits. Review remaining findings and run application smoke tests.\n", p.Policy.Java)
+	return nil
+}
+
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: jupgrade <inspect|plan|apply|verify|rollback|policy> [options]")
+		return errors.New("usage: jupgrade <inspect|plan|upgrade|apply|verify|rollback|policy> [options]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	switch args[0] {
 	case "inspect":
-		repo := flags.String("repo", ".", "Maven repository root")
-		if err := flags.Parse(args[1:]); err != nil {
+		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root (JUPGRADE_REPO)")
+		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
-		}
-		if flags.NArg() != 0 {
-			return errors.New("unexpected positional arguments")
 		}
 		report, err := upgrade.Inspect(*repo)
 		if err != nil {
 			return err
 		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(report)
+		return printJSON(report)
 	case "policy":
-		if len(args) != 1 {
-			return errors.New("usage: jupgrade policy")
-		}
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(upgrade.DefaultPolicy())
-	case "plan":
-		repo := flags.String("repo", ".", "Maven repository root")
-		policy := flags.String("policy", "", "JSON policy (defaults to curated Java 21 build plugins)")
-		output := flags.String("out", "", "new plan file; omit to print JSON to stdout")
-		if err := flags.Parse(args[1:]); err != nil {
+		config := bindPolicy(flags)
+		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
 		}
-		if flags.NArg() != 0 {
-			return errors.New("unexpected positional arguments")
+		p, err := config.resolve()
+		if err != nil {
+			return err
 		}
-		p, err := upgrade.ReadPolicy(*policy)
+		return printJSON(p)
+	case "plan", "upgrade":
+		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root (JUPGRADE_REPO)")
+		config := bindPolicy(flags)
+		output := flags.String("out", envDefault("JUPGRADE_OUT", ""), "new plan file; plan prints JSON if omitted (JUPGRADE_OUT)")
+		dryRun := false
+		var vf verifyFlags
+		var offline *bool
+		if args[0] == "upgrade" {
+			flags.BoolVar(&dryRun, "dry-run", false, "save/print the plan without applying or building")
+			vf = bindVerify(flags)
+			offline = bindOffline(flags)
+		}
+		if err := parseFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		var options upgrade.VerifyOptions
+		if args[0] == "upgrade" && !dryRun {
+			if *output == "" {
+				return errors.New("upgrade requires --out PATH to save a recoverable plan; use --dry-run to preview")
+			}
+			var err error
+			options, err = vf.options(flags, *offline)
+			if err != nil {
+				return err
+			}
+		}
+		p, err := config.resolve()
 		if err != nil {
 			return err
 		}
@@ -71,59 +110,73 @@ func run(args []string) error {
 			return err
 		}
 		if *output == "" {
-			encoder := json.NewEncoder(os.Stdout)
-			encoder.SetIndent("", "  ")
-			if err := encoder.Encode(plan); err != nil {
-				return err
-			}
-		} else if err := upgrade.WritePlan(*output, plan); err != nil {
+			err = printJSON(plan)
+		} else {
+			err = upgrade.WritePlan(*output, plan)
+		}
+		if err != nil {
 			return err
 		}
 		summary(plan)
 		if plan.HasBlockers() {
 			return errors.New("plan saved with blockers; resolve them before applying")
 		}
-		return nil
-	case "apply", "rollback", "verify":
-		path := flags.String("plan", "", "saved migration plan")
-		var home, profiles, mavenRepo *string
-		var offline *bool
-		var timeout *time.Duration
-		if args[0] == "verify" {
-			home = flags.String("java-home", "", "Java 21 installation directory")
-			mavenRepo = flags.String("maven-repo", "", "Maven local artifact cache directory")
-			profiles = flags.String("profiles", "", "comma-separated Maven profiles to verify")
-			offline = flags.Bool("offline", false, "use only cached Maven artifacts")
-			timeout = flags.Duration("timeout", 20*time.Minute, "maximum build duration")
+		if args[0] == "plan" || dryRun {
+			return nil
 		}
-		if err := flags.Parse(args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "Saved recovery plan: %s\n", *output)
+		if err := upgrade.Apply(plan, false); err != nil {
 			return err
 		}
-		if *path == "" || flags.NArg() != 0 {
-			return errors.New("provide --plan PATH; no positional arguments")
+		if err := verifyPlan(plan, options); err != nil {
+			return fmt.Errorf("%w; changes remain applied for inspection; rollback with jupgrade rollback --plan %q", err, *output)
+		}
+		return nil
+	case "apply", "rollback", "verify":
+		path := flags.String("plan", envDefault("JUPGRADE_PLAN", ""), "saved migration plan (JUPGRADE_PLAN)")
+		var vf verifyFlags
+		var offline *bool
+		if args[0] == "verify" {
+			vf = bindVerify(flags)
+			offline = bindOffline(flags)
+		}
+		if err := parseFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		if *path == "" {
+			return errors.New("provide --plan PATH (or JUPGRADE_PLAN)")
 		}
 		p, err := upgrade.ReadPlan(*path)
 		if err != nil {
 			return err
 		}
 		if args[0] == "verify" {
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			err = upgrade.Verify(ctx, p, upgrade.VerifyOptions{JavaHome: *home, MavenRepo: *mavenRepo, Profiles: *profiles, Offline: *offline, Timeout: *timeout, Stdout: os.Stdout, Stderr: os.Stderr})
-		} else {
-			err = upgrade.Apply(p, args[0] == "rollback")
+			options, err := vf.options(flags, *offline)
+			if err != nil {
+				return err
+			}
+			return verifyPlan(p, options)
 		}
-		if err != nil {
+		if err := upgrade.Apply(p, args[0] == "rollback"); err != nil {
 			return err
 		}
-		if args[0] == "verify" {
-			fmt.Println("Java 21 build passed; migration produced zero further edits. Review remaining findings and run application smoke tests.")
-		} else {
-			fmt.Printf("%s complete (%d planned files)\n", args[0], len(p.Files))
-		}
+		fmt.Printf("%s complete (%d planned files)\n", args[0], len(p.Files))
 		return nil
 	case "help", "-h", "--help":
-		fmt.Println("jupgrade inspect --repo DIR\njupgrade plan --repo DIR --out PLAN.json [--policy POLICY.json]\njupgrade apply --plan PLAN.json\njupgrade verify --plan PLAN.json [--java-home DIR] [--profiles LIST] [--offline]\njupgrade rollback --plan PLAN.json\njupgrade policy")
+		fmt.Println(`jupgrade inspect [--repo DIR]
+jupgrade plan [--repo DIR] [--out PLAN.json] [--java 17|21|25] [--preset build|common]
+jupgrade upgrade --out PLAN.json [policy/build options] [--dry-run]
+jupgrade apply --plan PLAN.json
+jupgrade verify --plan PLAN.json [--java-home DIR] [--profiles LIST] [--offline]
+jupgrade rollback --plan PLAN.json
+jupgrade policy [--java 17|21|25] [--preset build|common]
+
+Policy options: --policy FILE, --dependency G:A=V, --plugin G:A=V,
+--parent G:A=V, --spring-boot VERSION, --maven VERSION [--maven-sha256 HEX]. Version rules are repeatable.
+Defaults: Java 21 and pinned build plugins; existing newer versions are retained.
+Use jupgrade COMMAND --help for options and their JUPGRADE_* environment variables.
+Planning is offline; the resolved policy is saved in the plan.
+Gradle and Spring Boot major source migrations are not implemented yet.`)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
@@ -131,7 +184,7 @@ func run(args []string) error {
 }
 
 func summary(p upgrade.Plan) {
-	fmt.Fprintf(os.Stderr, "%d POMs to change, %d actions, %d findings\n", len(p.Files), len(p.Changes), len(p.Findings))
+	fmt.Fprintf(os.Stderr, "%d files to change, %d actions, %d findings (target Java %d)\n", len(p.Files), len(p.Changes), len(p.Findings), p.Policy.Java)
 	for _, c := range p.Changes {
 		fmt.Fprintf(os.Stderr, "  %s: %s\n", c.Path, c.Reason)
 	}

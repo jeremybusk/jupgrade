@@ -96,8 +96,14 @@ func Verify(ctx context.Context, p Plan, options VerifyOptions) error {
 		return fmt.Errorf("could not determine Maven runtime JDK:\n%s", clean)
 	}
 	major, _ := strconv.Atoi(match[1])
-	if major != 21 {
-		return fmt.Errorf("Maven runs on Java %d; verification requires Java 21 (use --java-home)", major)
+	if major != p.Policy.Java {
+		return fmt.Errorf("Maven runs on Java %d; verification requires Java %d (use --java-home)", major, p.Policy.Java)
+	}
+	if p.Policy.Maven != "" {
+		maven := regexp.MustCompile(`Apache Maven\s+([0-9]+(?:\.[0-9]+)+)`).FindStringSubmatch(clean)
+		if len(maven) != 2 || compareVersions(maven[1], p.Policy.Maven) < 0 || compareVersions(maven[1], "4.0.0") >= 0 {
+			return fmt.Errorf("verification requires Maven 3 >= %s; runtime reports:\n%s", p.Policy.Maven, clean)
+		}
 	}
 	if options.Stdout != nil {
 		_, _ = fmt.Fprint(options.Stdout, clean)
