@@ -23,6 +23,17 @@ type element struct {
 }
 
 func parseXML(data []byte) (*element, error) {
+	root, err := parseXMLDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	if root.Name != "project" {
+		return nil, fmt.Errorf("expected a Maven project root")
+	}
+	return root, nil
+}
+
+func parseXMLDocument(data []byte) (*element, error) {
 	d := xml.NewDecoder(bytes.NewReader(data))
 	var root, current *element
 	for {
@@ -65,8 +76,8 @@ func parseXML(data []byte) (*element, error) {
 			}
 		}
 	}
-	if root == nil || root.Name != "project" {
-		return nil, fmt.Errorf("expected a Maven project root")
+	if root == nil {
+		return nil, fmt.Errorf("expected an XML root")
 	}
 	return root, nil
 }

@@ -79,6 +79,8 @@ policy, so later environment changes do not affect apply, verify, or rollback.
 | `--out` / `--plan` | `JUPGRADE_OUT` / `JUPGRADE_PLAN` |
 | `--java-home` | `JUPGRADE_JAVA_HOME` (otherwise `JAVA_HOME`/`PATH`) |
 | `--maven-repo` | `JUPGRADE_MAVEN_REPO` |
+| `--maven-settings` | `JUPGRADE_MAVEN_SETTINGS` |
+| `inspect --model` | `JUPGRADE_MODEL` |
 | `--profiles` | `JUPGRADE_PROFILES` |
 | `--offline` | `JUPGRADE_OFFLINE` (`1`/`0` or `true`/`false`) |
 | `--timeout` | `JUPGRADE_TIMEOUT` (for example `20m`) |
@@ -350,6 +352,40 @@ Maven before resolving. Replay uses the saved models even if the cache changes.
 This is bounded static model resolution: Maven settings, active profile evaluation,
 compound property interpolation and arbitrary effective-model behavior are not
 reproduced. Ambiguous requested ownership blocks rather than inventing a version.
+
+## Effective build discovery
+
+```sh
+bin/jupgrade discover --repo /path/to/service --profiles production \
+  --maven-settings /path/to/settings.xml --out /tmp/service-model.json
+bin/jupgrade inspect --repo /path/to/service --model /tmp/service-model.json
+
+# Evaluate a dynamic Gradle build using its original supported runtime/JDK.
+bin/jupgrade discover --repo /path/to/gradle-service \
+  --gradle-command /path/to/gradle --out /tmp/gradle-model.json
+```
+
+Discovery executes build configuration on an isolated copy twice and requires
+identical normalized results and unchanged inputs. Maven uses pinned Help Plugin
+3.5.1 to capture effective reactor POMs with active profiles/settings; inactive
+profile declarations are excluded from the report. Gradle captures evaluated
+project directories, custom build files and resolved external dependencies for
+every resolvable configuration, including dynamic includes and version expressions.
+Unresolved dependencies, escaping project directories and composite builds fail.
+
+Snapshots record the runtime tool/JDK, selected profiles, settings-file hashes and
+repository input hashes. Settings contents and arbitrary project properties are
+not exported. Inspection of a snapshot needs no build execution and rejects
+changed inputs/settings. Save snapshots outside the repo or in `.jupgrade`.
+`--maven-settings` also applies to recipe workers and build verification.
+
+Discovery is read-only evidence. It does not invent writable declaration owners in
+opaque scripts or automatically make native planning support arbitrary DSLs.
+Use its resolved versions to choose explicit rules/recipes; model-driven edits to
+dynamic declarations remain future work. Maven effective configuration is not a
+complete transitive dependency graph. Gradle discovery still needs its original
+DSL to evaluate with the selected runtime. The Gradle CI matrix exercises model
+capture after migration; a separate Maven job exercises effective BOM management.
 
 ## Gradle Java builds
 

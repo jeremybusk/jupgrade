@@ -143,6 +143,23 @@ func TestGradleBuildMatrixIntegration(t *testing.T) {
 				if err := Verify(context.Background(), p, options); err != nil {
 					t.Fatalf("%v\n%s", err, log.String())
 				}
+				model, err := DiscoverBuildModel(context.Background(), root, options)
+				if err != nil {
+					t.Fatalf("effective Gradle model: %v\n%s", err, log.String())
+				}
+				inspection, err := InspectBuildModel(root, model)
+				if err != nil {
+					t.Fatal(err)
+				}
+				foundJUnit := false
+				for _, artifact := range inspection.Artifacts {
+					if artifact.Coordinate == "junit:junit" && artifact.Resolved == "4.13.2" {
+						foundJUnit = true
+					}
+				}
+				if !foundJUnit {
+					t.Fatal("effective Gradle model omitted selected JUnit version")
+				}
 				module := root
 				if fixture == "gradle-kotlin" {
 					module = filepath.Join(root, "app")

@@ -13,7 +13,7 @@ import (
 
 func cleanConfigEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"GRADLE", "GRADLE_SHA256", "GRADLE_PLUGINS", "GRADLE_COMMAND", "GRADLE_USER_HOME", "RECIPES", "RESOLVE_MAVEN", "REPO", "POLICY", "JAVA", "PRESET", "SPRING_BOOT", "DEPENDENCIES", "PLUGINS", "PARENTS", "OUT", "PLAN", "JAVA_HOME", "MAVEN", "MAVEN_SHA256", "MAVEN_REPO", "PROFILES", "OFFLINE", "TIMEOUT"} {
+	for _, key := range []string{"MODEL", "MAVEN_SETTINGS", "GRADLE", "GRADLE_SHA256", "GRADLE_PLUGINS", "GRADLE_COMMAND", "GRADLE_USER_HOME", "RECIPES", "RESOLVE_MAVEN", "REPO", "POLICY", "JAVA", "PRESET", "SPRING_BOOT", "DEPENDENCIES", "PLUGINS", "PARENTS", "OUT", "PLAN", "JAVA_HOME", "MAVEN", "MAVEN_SHA256", "MAVEN_REPO", "PROFILES", "OFFLINE", "TIMEOUT"} {
 		t.Setenv("JUPGRADE_"+key, "")
 	}
 	// Empty preset means the build preset; empty timeout is invalid by design.

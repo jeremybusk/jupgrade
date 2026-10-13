@@ -18,6 +18,7 @@ type VerifyOptions struct {
 	GradleUserHome string
 	JavaHome       string
 	MavenRepo      string
+	MavenSettings  string
 	Profiles       string
 	Offline        bool
 	Timeout        time.Duration
@@ -116,6 +117,13 @@ func Verify(ctx context.Context, p Plan, options VerifyOptions) error {
 			_, _ = fmt.Fprint(options.Stdout, clean)
 		}
 		args := []string{"-B", "-ntp"}
+		if options.MavenSettings != "" {
+			settings, err := filepath.Abs(options.MavenSettings)
+			if err != nil {
+				return err
+			}
+			args = append(args, "--settings", settings)
+		}
 		if options.MavenRepo != "" {
 			repo, err := filepath.Abs(options.MavenRepo)
 			if err != nil {

@@ -68,3 +68,22 @@ jobs:
           path: reports/
           if-no-files-found: error
           retention-days: 14
+
+  maven-model:
+    name: Maven effective model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Discover real effective BOM management
+        env:
+          JUPGRADE_MODEL_INTEGRATION: '1'
+        run: go test -v -count=1 -timeout=10m ./internal/upgrade -run '^TestMavenEffectiveModelDiscoveryIntegration$'

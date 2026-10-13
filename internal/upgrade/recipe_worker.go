@@ -213,18 +213,8 @@ func CreateRecipePlan(ctx context.Context, root string, policy Policy, options V
 	if err := os.Mkdir(copyRoot, 0755); err != nil {
 		return Plan{}, err
 	}
-	for _, path := range sortedContentPaths(inputs) {
-		destination := filepath.Join(copyRoot, path)
-		if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
-			return Plan{}, err
-		}
-		info, err := os.Stat(filepath.Join(root, path))
-		if err != nil {
-			return Plan{}, err
-		}
-		if err := os.WriteFile(destination, inputs[path], info.Mode().Perm()); err != nil {
-			return Plan{}, err
-		}
+	if err := copyWorktree(root, copyRoot, inputs); err != nil {
+		return Plan{}, err
 	}
 	if options.Timeout <= 0 {
 		options.Timeout = 20 * time.Minute
@@ -384,13 +374,20 @@ func executeRecipes(ctx context.Context, root, scratch, build string, specs []Re
 	executable := "mvn"
 	var args []string
 	if build == "maven" {
+		if options.MavenSettings != "" {
+			settings, err := filepath.Abs(options.MavenSettings)
+			if err != nil {
+				return err
+			}
+			args = append(args, "--settings", settings)
+		}
 		if info, err := os.Lstat(filepath.Join(root, "mvnw")); err == nil {
 			if info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0111 == 0 {
 				return fmt.Errorf("source worker mvnw must be a regular executable")
 			}
 			executable = filepath.Join(root, "mvnw")
 		}
-		args = []string{"-B", "-ntp", rewriteMavenPlugin + ":runNoFork", "-Dmaven.repo.local=" + cache, "-Drewrite.activeRecipes=" + strings.Join(active, ","), "-Drewrite.recipeArtifactCoordinates=" + strings.Join(artifacts, ","), "-Drewrite.failOnInvalidActiveRecipes=true", "-Drewrite.pomCacheEnabled=false", "-Drewrite.exportDatatables=false", "-Drewrite.skip=false", "-DskipMavenParsing=false"}
+		args = append(args, "-B", "-ntp", rewriteMavenPlugin+":runNoFork", "-Dmaven.repo.local="+cache, "-Drewrite.activeRecipes="+strings.Join(active, ","), "-Drewrite.recipeArtifactCoordinates="+strings.Join(artifacts, ","), "-Drewrite.failOnInvalidActiveRecipes=true", "-Drewrite.pomCacheEnabled=false", "-Drewrite.exportDatatables=false", "-Drewrite.skip=false", "-DskipMavenParsing=false")
 		if options.Offline {
 			args = append(args, "-o")
 		}

@@ -165,7 +165,7 @@ func (f *policyFlags) resolve() (upgrade.Policy, error) {
 	return p, p.Validate()
 }
 
-type verifyFlags struct{ home, repo, profiles, timeout, gradleCommand, gradleHome *string }
+type verifyFlags struct{ home, repo, profiles, timeout, gradleCommand, gradleHome, settings *string }
 
 func bindVerify(flags *flag.FlagSet) verifyFlags {
 	return verifyFlags{
@@ -175,6 +175,7 @@ func bindVerify(flags *flag.FlagSet) verifyFlags {
 		flags.String("timeout", envDefault("JUPGRADE_TIMEOUT", "20m"), "maximum build duration (JUPGRADE_TIMEOUT)"),
 		flags.String("gradle-command", envDefault("JUPGRADE_GRADLE_COMMAND", ""), "Gradle executable override (JUPGRADE_GRADLE_COMMAND)"),
 		flags.String("gradle-user-home", envDefault("JUPGRADE_GRADLE_USER_HOME", ""), "Gradle cache directory (JUPGRADE_GRADLE_USER_HOME)"),
+		flags.String("maven-settings", envDefault("JUPGRADE_MAVEN_SETTINGS", ""), "Maven settings file (JUPGRADE_MAVEN_SETTINGS)"),
 	}
 }
 
@@ -203,7 +204,7 @@ func (f verifyFlags) options(flags *flag.FlagSet, offline bool) (upgrade.VerifyO
 	if err != nil || timeout <= 0 {
 		return upgrade.VerifyOptions{}, fmt.Errorf("--timeout/JUPGRADE_TIMEOUT must be a positive duration, got %q", *f.timeout)
 	}
-	return upgrade.VerifyOptions{GradleCommand: *f.gradleCommand, GradleUserHome: *f.gradleHome, JavaHome: *f.home, MavenRepo: *f.repo, Profiles: *f.profiles, Offline: offline, Timeout: timeout, Stdout: os.Stdout, Stderr: os.Stderr}, nil
+	return upgrade.VerifyOptions{MavenSettings: *f.settings, GradleCommand: *f.gradleCommand, GradleUserHome: *f.gradleHome, JavaHome: *f.home, MavenRepo: *f.repo, Profiles: *f.profiles, Offline: offline, Timeout: timeout, Stdout: os.Stdout, Stderr: os.Stderr}, nil
 }
 
 func environmentBool(flags *flag.FlagSet, flagName, envName string, value bool) (bool, error) {

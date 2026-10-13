@@ -55,13 +55,47 @@ func run(args []string) error {
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	switch args[0] {
+	case "discover":
+		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root")
+		output := flags.String("out", envDefault("JUPGRADE_OUT", ""), "new model snapshot; omit to print JSON")
+		vf := bindVerify(flags)
+		offline := bindOffline(flags)
+		if err := parseFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		options, err := vf.options(flags, *offline)
+		if err != nil {
+			return err
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		model, err := upgrade.DiscoverBuildModel(ctx, *repo, options)
+		if err != nil {
+			return err
+		}
+		if *output == "" {
+			return printJSON(model)
+		}
+		return upgrade.WriteBuildModel(*output, model)
 	case "inspect":
+		modelPath := flags.String("model", envDefault("JUPGRADE_MODEL", ""), "saved effective build model")
 		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root (JUPGRADE_REPO)")
 		cache := flags.String("maven-repo", envDefault("JUPGRADE_MAVEN_REPO", ""), "cached parent/BOM repository")
 		resolve := flags.Bool("resolve-maven", false, "capture cached Maven models for inspection (JUPGRADE_RESOLVE_MAVEN)")
 		config := bindPolicy(flags)
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
+		}
+		if *modelPath != "" {
+			model, err := upgrade.ReadBuildModel(*modelPath)
+			if err != nil {
+				return err
+			}
+			report, err := upgrade.InspectBuildModel(*repo, model)
+			if err != nil {
+				return err
+			}
+			return printJSON(report)
 		}
 		p, err := config.resolve()
 		if err != nil {
@@ -214,6 +248,7 @@ func run(args []string) error {
 		return nil
 	case "help", "-h", "--help":
 		fmt.Println(`jupgrade inspect [--repo DIR]
+jupgrade discover [--repo DIR] [--out MODEL.json] [build options]
 jupgrade resolve [--repo DIR] [--out POLICY.json] [--maven-repo CACHE]
 jupgrade plan [--repo DIR] [--out PLAN.json] [--java 17|21|25] [--preset build|common]
 jupgrade upgrade --out PLAN.json [policy/build options] [--dry-run]
