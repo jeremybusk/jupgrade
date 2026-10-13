@@ -14,10 +14,11 @@ type repositoryModel struct {
 }
 
 type pomModel struct {
-	path   string
-	data   []byte
-	root   *element
-	parent *pomModel
+	path     string
+	data     []byte
+	root     *element
+	parent   *pomModel
+	external bool
 }
 
 type propertyOwner struct{ path, name string }
@@ -42,6 +43,7 @@ type Artifact struct {
 }
 
 type Inspection struct {
+	Build     string     `json:"build,omitempty"`
 	Root      string     `json:"root"`
 	POMs      []string   `json:"poms"`
 	Artifacts []Artifact `json:"artifacts"`
@@ -49,7 +51,7 @@ type Inspection struct {
 
 var propertyReference = regexp.MustCompile(`\$\{([^{}]+)\}`)
 
-func newRepositoryModel(contents map[string][]byte) (*repositoryModel, error) {
+func newRepositoryModel(contents map[string][]byte, snapshots ...map[string]MavenModel) (*repositoryModel, error) {
 	m := &repositoryModel{poms: map[string]*pomModel{}}
 	for path, data := range contents {
 		n, err := parseXML(data)
@@ -59,9 +61,27 @@ func newRepositoryModel(contents map[string][]byte) (*repositoryModel, error) {
 		m.poms[path] = &pomModel{path: path, data: data, root: n}
 		m.paths = append(m.paths, path)
 	}
+	for _, models := range snapshots {
+		if err := validateMavenModels(models); err != nil {
+			return nil, err
+		}
+		for gav, model := range models {
+			root, err := parseXML([]byte(model.Content))
+			if err != nil {
+				return nil, err
+			}
+			path := "maven:" + gav
+			m.poms[path] = &pomModel{path: path, data: []byte(model.Content), root: root, external: true}
+		}
+	}
+	allPaths := make([]string, 0, len(m.poms))
+	for path := range m.poms {
+		allPaths = append(allPaths, path)
+	}
+	sort.Strings(allPaths)
 	sort.Strings(m.paths)
 	// parentCandidate follows relativePath only inside the declared inventory.
-	for _, path := range m.paths {
+	for _, path := range allPaths {
 		p := m.poms[path]
 		candidate, enabled := parentCandidate(path, p.data, p.root)
 		if parent := m.poms[candidate]; enabled && parent != nil && parentMatches(p.data, p.root, parent.data, parent.root) {
@@ -73,7 +93,7 @@ func newRepositoryModel(contents map[string][]byte) (*repositoryModel, error) {
 			}
 		}
 	}
-	for _, path := range m.paths {
+	for _, path := range allPaths {
 		seen := map[string]bool{}
 		for p := m.poms[path]; p != nil; p = p.parent {
 			if seen[p.path] {
@@ -172,7 +192,7 @@ func (m *repositoryModel) property(p *pomModel, context *element, key string, se
 		}
 		return m.property(p, context, refs[0][1], seen)
 	}
-	if profileOf(node) != nil {
+	if profileOf(node) != nil || owner.external {
 		return resolvedVersion{value: value, declaration: owner.path}
 	}
 	return resolvedVersion{value: value, owner: &propertyOwner{owner.path, key}, declaration: owner.path}
@@ -257,7 +277,16 @@ func (m *repositoryModel) localArtifact(coord, version string) *pomModel {
 	if version == "" {
 		return nil
 	}
-	for _, path := range m.paths {
+	paths := append([]string(nil), m.paths...)
+	external := []string{}
+	for path, p := range m.poms {
+		if p.external {
+			external = append(external, path)
+		}
+	}
+	sort.Strings(external)
+	paths = append(paths, external...)
+	for _, path := range paths {
 		p := m.poms[path]
 		if projectCoordinate(p.data, p.root) == coord && projectVersion(p.data, p.root) == version {
 			return p
@@ -316,7 +345,7 @@ func policyVersion(policy Policy, kind, coord string) string {
 }
 
 func (m *repositoryModel) inspect(root string) Inspection {
-	report := Inspection{Root: root, POMs: append([]string(nil), m.paths...), Artifacts: []Artifact{}}
+	report := Inspection{Build: "maven", Root: root, POMs: append([]string(nil), m.paths...), Artifacts: []Artifact{}}
 	for _, path := range m.paths {
 		p := m.poms[path]
 		walk(p.root, func(n *element) {
@@ -342,19 +371,25 @@ func (m *repositoryModel) inspect(root string) Inspection {
 	return report
 }
 
-func Inspect(root string) (Inspection, error) {
+func Inspect(root string) (Inspection, error) { return InspectWithPolicy(root, DefaultPolicy()) }
+
+func InspectWithPolicy(root string, policy Policy) (Inspection, error) {
 	root, err := canonicalRoot(root)
 	if err != nil {
 		return Inspection{}, err
 	}
-	if err := requireMaven(root); err != nil {
+	build, err := detectBuild(root)
+	if err != nil {
 		return Inspection{}, err
+	}
+	if build == "gradle" {
+		return inspectGradle(root, policy)
 	}
 	contents, err := readRepositoryPOMs(root)
 	if err != nil {
 		return Inspection{}, err
 	}
-	m, err := newRepositoryModel(contents)
+	m, err := newRepositoryModel(contents, policy.MavenModels)
 	if err != nil {
 		return Inspection{}, err
 	}
@@ -365,7 +400,7 @@ func Inspect(root string) (Inspection, error) {
 // an artifact explicitly selected for the same target. Other shared uses keep
 // the property intact and get declaration-local pins instead.
 func updateOwnedProperties(contents map[string][]byte, policy Policy) ([]Change, error) {
-	m, err := newRepositoryModel(contents)
+	m, err := newRepositoryModel(contents, policy.MavenModels)
 	if err != nil {
 		return nil, err
 	}

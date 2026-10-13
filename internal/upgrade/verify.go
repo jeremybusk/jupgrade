@@ -14,13 +14,15 @@ import (
 )
 
 type VerifyOptions struct {
-	JavaHome  string
-	MavenRepo string
-	Profiles  string
-	Offline   bool
-	Timeout   time.Duration
-	Stdout    io.Writer
-	Stderr    io.Writer
+	GradleCommand  string
+	GradleUserHome string
+	JavaHome       string
+	MavenRepo      string
+	Profiles       string
+	Offline        bool
+	Timeout        time.Duration
+	Stdout         io.Writer
+	Stderr         io.Writer
 }
 
 // Verify executes the repository's build. Build failures and source changes are
@@ -83,51 +85,57 @@ func Verify(ctx context.Context, p Plan, options VerifyOptions) error {
 		}
 		env = append(filtered, "JAVA_HOME="+javaHome, "PATH="+filepath.Join(javaHome, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
-	version := exec.CommandContext(ctx, executable, "--version")
-	version.Dir, version.Env = p.Root, env
-	output, err := version.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("Maven version check: %w\n%s", err, output)
-	}
-	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	clean := ansi.ReplaceAllString(string(output), "")
-	match := regexp.MustCompile(`Java version:\s*([0-9]+)`).FindStringSubmatch(clean)
-	if len(match) != 2 {
-		return fmt.Errorf("could not determine Maven runtime JDK:\n%s", clean)
-	}
-	major, _ := strconv.Atoi(match[1])
-	if major != p.Policy.Java {
-		return fmt.Errorf("Maven runs on Java %d; verification requires Java %d (use --java-home)", major, p.Policy.Java)
-	}
-	if p.Policy.Maven != "" {
-		maven := regexp.MustCompile(`Apache Maven\s+([0-9]+(?:\.[0-9]+)+)`).FindStringSubmatch(clean)
-		if len(maven) != 2 || compareVersions(maven[1], p.Policy.Maven) < 0 || compareVersions(maven[1], "4.0.0") >= 0 {
-			return fmt.Errorf("verification requires Maven 3 >= %s; runtime reports:\n%s", p.Policy.Maven, clean)
-		}
-	}
-	if options.Stdout != nil {
-		_, _ = fmt.Fprint(options.Stdout, clean)
-	}
-	args := []string{"-B", "-ntp"}
-	if options.MavenRepo != "" {
-		repo, err := filepath.Abs(options.MavenRepo)
-		if err != nil {
+	if p.Build == "gradle" {
+		if err := runGradleBuild(ctx, p, options, env); err != nil {
 			return err
 		}
-		args = append(args, "-Dmaven.repo.local="+repo)
-	}
-	if options.Offline {
-		args = append(args, "-o")
-	}
-	if options.Profiles != "" {
-		args = append(args, "-P"+options.Profiles)
-	}
-	// These command-line properties override common accidental skip settings.
-	args = append(args, "-Dmaven.test.skip=false", "-DskipTests=false", "-DskipITs=false", "clean", "verify")
-	command := exec.CommandContext(ctx, executable, args...)
-	command.Dir, command.Env, command.Stdout, command.Stderr = p.Root, env, options.Stdout, options.Stderr
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("Maven clean verify failed: %w", err)
+	} else {
+		version := exec.CommandContext(ctx, executable, "--version")
+		version.Dir, version.Env = p.Root, env
+		output, err := version.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("Maven version check: %w\n%s", err, output)
+		}
+		ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+		clean := ansi.ReplaceAllString(string(output), "")
+		match := regexp.MustCompile(`Java version:\s*([0-9]+)`).FindStringSubmatch(clean)
+		if len(match) != 2 {
+			return fmt.Errorf("could not determine Maven runtime JDK:\n%s", clean)
+		}
+		major, _ := strconv.Atoi(match[1])
+		if major != p.Policy.Java {
+			return fmt.Errorf("Maven runs on Java %d; verification requires Java %d (use --java-home)", major, p.Policy.Java)
+		}
+		if p.Policy.Maven != "" {
+			maven := regexp.MustCompile(`Apache Maven\s+([0-9]+(?:\.[0-9]+)+)`).FindStringSubmatch(clean)
+			if len(maven) != 2 || compareVersions(maven[1], p.Policy.Maven) < 0 || compareVersions(maven[1], "4.0.0") >= 0 {
+				return fmt.Errorf("verification requires Maven 3 >= %s; runtime reports:\n%s", p.Policy.Maven, clean)
+			}
+		}
+		if options.Stdout != nil {
+			_, _ = fmt.Fprint(options.Stdout, clean)
+		}
+		args := []string{"-B", "-ntp"}
+		if options.MavenRepo != "" {
+			repo, err := filepath.Abs(options.MavenRepo)
+			if err != nil {
+				return err
+			}
+			args = append(args, "-Dmaven.repo.local="+repo)
+		}
+		if options.Offline {
+			args = append(args, "-o")
+		}
+		if options.Profiles != "" {
+			args = append(args, "-P"+options.Profiles)
+		}
+		// These command-line properties override common accidental skip settings.
+		args = append(args, "-Dmaven.test.skip=false", "-DskipTests=false", "-DskipITs=false", "clean", "verify")
+		command := exec.CommandContext(ctx, executable, args...)
+		command.Dir, command.Env, command.Stdout, command.Stderr = p.Root, env, options.Stdout, options.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("Maven clean verify failed: %w", err)
+		}
 	}
 	if err := checkApplied(p); err != nil {
 		return fmt.Errorf("build modified migration inputs: %w", err)

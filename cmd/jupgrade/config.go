@@ -26,8 +26,8 @@ func (v *versionRules) String() string         { return strings.Join(*v, ",") }
 func (v *versionRules) Set(value string) error { *v = append(*v, value); return nil }
 
 type policyFlags struct {
-	path, java, preset, boot, maven, mavenSHA *string
-	dependencies, plugins, parents            versionRules
+	path, java, preset, boot, maven, mavenSHA, gradle, gradleSHA *string
+	dependencies, plugins, parents, gradlePlugins, recipes       versionRules
 }
 
 func bindPolicy(flags *flag.FlagSet) *policyFlags {
@@ -35,9 +35,13 @@ func bindPolicy(flags *flag.FlagSet) *policyFlags {
 	p.path = flags.String("policy", envDefault("JUPGRADE_POLICY", ""), "complete JSON policy (JUPGRADE_POLICY)")
 	p.java = flags.String("java", envDefault("JUPGRADE_JAVA", ""), "target Java: 17, 21 or 25; default 21 (JUPGRADE_JAVA)")
 	p.preset = flags.String("preset", envDefault("JUPGRADE_PRESET", "build"), "pinned preset: build or common (JUPGRADE_PRESET)")
-	p.boot = flags.String("spring-boot", envDefault("JUPGRADE_SPRING_BOOT", ""), "exact Spring Boot parent/BOM/plugin target; major migrations block (JUPGRADE_SPRING_BOOT)")
+	p.boot = flags.String("spring-boot", envDefault("JUPGRADE_SPRING_BOOT", ""), "exact Spring Boot parent/BOM/plugin target; major migrations require a recipe (JUPGRADE_SPRING_BOOT)")
 	p.maven = flags.String("maven", envDefault("JUPGRADE_MAVEN", ""), "exact Maven 3 wrapper target (JUPGRADE_MAVEN)")
 	p.mavenSHA = flags.String("maven-sha256", envDefault("JUPGRADE_MAVEN_SHA256", ""), "target Maven archive SHA-256 (JUPGRADE_MAVEN_SHA256)")
+	p.gradle = flags.String("gradle", envDefault("JUPGRADE_GRADLE", ""), "exact Gradle wrapper/runtime target (JUPGRADE_GRADLE)")
+	p.gradleSHA = flags.String("gradle-sha256", envDefault("JUPGRADE_GRADLE_SHA256", ""), "target Gradle archive SHA-256 (JUPGRADE_GRADLE_SHA256)")
+	flags.Var(&p.gradlePlugins, "gradle-plugin", "pluginId=version; repeatable (JUPGRADE_GRADLE_PLUGINS: comma-separated)")
+	flags.Var(&p.recipes, "recipe", "pinned recipe alias; repeatable or comma-separated (JUPGRADE_RECIPES)")
 	flags.Var(&p.dependencies, "dependency", "groupId:artifactId=version; repeatable (JUPGRADE_DEPENDENCIES: comma-separated)")
 	flags.Var(&p.plugins, "plugin", "groupId:artifactId=version; repeatable (JUPGRADE_PLUGINS: comma-separated)")
 	flags.Var(&p.parents, "parent", "groupId:artifactId=version; repeatable (JUPGRADE_PARENTS: comma-separated)")
@@ -60,6 +64,7 @@ func (f *policyFlags) resolve() (upgrade.Policy, error) {
 	if err != nil {
 		return p, err
 	}
+	originalDigest := p.RecipeRun
 	java := p.Java
 	if *f.java != "" {
 		java, err = strconv.Atoi(*f.java)
@@ -89,6 +94,18 @@ func (f *policyFlags) resolve() (upgrade.Policy, error) {
 	if *f.mavenSHA != "" {
 		p.MavenSHA256 = *f.mavenSHA
 	}
+	if *f.gradle != "" {
+		if p.Gradle != *f.gradle {
+			p.GradleSHA256 = ""
+		}
+		p.Gradle = *f.gradle
+	}
+	if *f.gradleSHA != "" {
+		p.GradleSHA256 = *f.gradleSHA
+	}
+	if p.GradlePlugins == nil {
+		p.GradlePlugins = map[string]string{}
+	}
 	if p.Plugins == nil {
 		p.Plugins = map[string]string{}
 	}
@@ -99,6 +116,7 @@ func (f *policyFlags) resolve() (upgrade.Policy, error) {
 		p.Parents = map[string]string{}
 	}
 	if *f.boot != "" {
+		p.GradlePlugins["org.springframework.boot"] = *f.boot
 		p.Parents["org.springframework.boot:spring-boot-starter-parent"] = *f.boot
 		p.Dependencies["org.springframework.boot:spring-boot-dependencies"] = *f.boot
 		p.Plugins["org.springframework.boot:spring-boot-maven-plugin"] = *f.boot
@@ -111,6 +129,7 @@ func (f *policyFlags) resolve() (upgrade.Policy, error) {
 		{"JUPGRADE_DEPENDENCIES", f.dependencies, p.Dependencies},
 		{"JUPGRADE_PLUGINS", f.plugins, p.Plugins},
 		{"JUPGRADE_PARENTS", f.parents, p.Parents},
+		{"JUPGRADE_GRADLE_PLUGINS", f.gradlePlugins, p.GradlePlugins},
 	} {
 		if value := os.Getenv(rules.env); value != "" {
 			if err := mergeRules(rules.dest, strings.Split(value, ",")); err != nil {
@@ -121,10 +140,32 @@ func (f *policyFlags) resolve() (upgrade.Policy, error) {
 			return p, err
 		}
 	}
+	if len(f.recipes) > 0 {
+		p.Recipes = nil
+		for _, value := range f.recipes {
+			for _, name := range strings.Split(value, ",") {
+				p.Recipes = append(p.Recipes, strings.TrimSpace(name))
+			}
+		}
+		p.RecipeRun = nil
+	} else if value := os.Getenv("JUPGRADE_RECIPES"); value != "" {
+		p.Recipes = strings.Split(value, ",")
+		for i := range p.Recipes {
+			p.Recipes[i] = strings.TrimSpace(p.Recipes[i])
+		}
+		p.RecipeRun = nil
+	}
+	// A captured recipe receipt is immutable; flags that change its policy must
+	// trigger fresh worker planning rather than reuse old source edits.
+	if originalDigest != nil && p.RecipeRun != nil {
+		if err := p.Validate(); err != nil {
+			p.RecipeRun = nil
+		}
+	}
 	return p, p.Validate()
 }
 
-type verifyFlags struct{ home, repo, profiles, timeout *string }
+type verifyFlags struct{ home, repo, profiles, timeout, gradleCommand, gradleHome *string }
 
 func bindVerify(flags *flag.FlagSet) verifyFlags {
 	return verifyFlags{
@@ -132,13 +173,15 @@ func bindVerify(flags *flag.FlagSet) verifyFlags {
 		flags.String("maven-repo", envDefault("JUPGRADE_MAVEN_REPO", ""), "Maven local artifact cache directory (JUPGRADE_MAVEN_REPO)"),
 		flags.String("profiles", envDefault("JUPGRADE_PROFILES", ""), "comma-separated Maven profiles (JUPGRADE_PROFILES)"),
 		flags.String("timeout", envDefault("JUPGRADE_TIMEOUT", "20m"), "maximum build duration (JUPGRADE_TIMEOUT)"),
+		flags.String("gradle-command", envDefault("JUPGRADE_GRADLE_COMMAND", ""), "Gradle executable override (JUPGRADE_GRADLE_COMMAND)"),
+		flags.String("gradle-user-home", envDefault("JUPGRADE_GRADLE_USER_HOME", ""), "Gradle cache directory (JUPGRADE_GRADLE_USER_HOME)"),
 	}
 }
 
 // Bool flags retain --offline shorthand and allow --offline=false to override
 // an environment default, including an invalid one.
 func bindOffline(flags *flag.FlagSet) *bool {
-	return flags.Bool("offline", false, "use cached Maven artifacts (JUPGRADE_OFFLINE)")
+	return flags.Bool("offline", false, "use cached build artifacts (JUPGRADE_OFFLINE)")
 }
 func (f verifyFlags) options(flags *flag.FlagSet, offline bool) (upgrade.VerifyOptions, error) {
 	explicit := false
@@ -160,5 +203,25 @@ func (f verifyFlags) options(flags *flag.FlagSet, offline bool) (upgrade.VerifyO
 	if err != nil || timeout <= 0 {
 		return upgrade.VerifyOptions{}, fmt.Errorf("--timeout/JUPGRADE_TIMEOUT must be a positive duration, got %q", *f.timeout)
 	}
-	return upgrade.VerifyOptions{JavaHome: *f.home, MavenRepo: *f.repo, Profiles: *f.profiles, Offline: offline, Timeout: timeout, Stdout: os.Stdout, Stderr: os.Stderr}, nil
+	return upgrade.VerifyOptions{GradleCommand: *f.gradleCommand, GradleUserHome: *f.gradleHome, JavaHome: *f.home, MavenRepo: *f.repo, Profiles: *f.profiles, Offline: offline, Timeout: timeout, Stdout: os.Stdout, Stderr: os.Stderr}, nil
+}
+
+func environmentBool(flags *flag.FlagSet, flagName, envName string, value bool) (bool, error) {
+	explicit := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == flagName {
+			explicit = true
+		}
+	})
+	if explicit {
+		return value, nil
+	}
+	if raw := os.Getenv(envName); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return false, fmt.Errorf("%s: %w", envName, err)
+		}
+		return value, nil
+	}
+	return value, nil
 }

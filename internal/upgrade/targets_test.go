@@ -189,11 +189,13 @@ func TestGradleDetection(t *testing.T) {
 	for _, file := range []string{"build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"} {
 		root := t.TempDir()
 		writeTestFile(t, root, file, "plugins {}")
-		if _, err := CreatePlan(root, DefaultPolicy()); err == nil || !strings.Contains(err.Error(), "Gradle") {
-			t.Fatal(err)
+		p, err := CreatePlan(root, DefaultPolicy())
+		if err != nil || p.Build != "gradle" || p.Schema != 4 {
+			t.Fatal(p, err)
 		}
-		if _, err := Inspect(root); err == nil || !strings.Contains(err.Error(), "Gradle") {
-			t.Fatal(err)
+		report, err := Inspect(root)
+		if err != nil || report.Build != "gradle" {
+			t.Fatal(report, err)
 		}
 		writeTestFile(t, root, "pom.xml", minimalPOM)
 		if _, err := CreatePlan(root, DefaultPolicy()); err == nil {

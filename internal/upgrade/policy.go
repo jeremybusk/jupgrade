@@ -11,12 +11,18 @@ import (
 
 // Policy is a reviewed set of target versions, not a request for "latest".
 type Policy struct {
-	Java         int               `json:"java"`
-	Maven        string            `json:"maven,omitempty"`
-	MavenSHA256  string            `json:"maven_sha256,omitempty"`
-	Plugins      map[string]string `json:"plugins"`
-	Dependencies map[string]string `json:"dependencies"`
-	Parents      map[string]string `json:"parents"`
+	Recipes       []string              `json:"recipes,omitempty"`
+	RecipeRun     *RecipeRun            `json:"recipe_run,omitempty"`
+	Gradle        string                `json:"gradle,omitempty"`
+	GradleSHA256  string                `json:"gradle_sha256,omitempty"`
+	GradlePlugins map[string]string     `json:"gradle_plugins,omitempty"`
+	MavenModels   map[string]MavenModel `json:"maven_models,omitempty"`
+	Java          int                   `json:"java"`
+	Maven         string                `json:"maven,omitempty"`
+	MavenSHA256   string                `json:"maven_sha256,omitempty"`
+	Plugins       map[string]string     `json:"plugins"`
+	Dependencies  map[string]string     `json:"dependencies"`
+	Parents       map[string]string     `json:"parents"`
 }
 
 func DefaultPolicy() Policy {
@@ -143,6 +149,23 @@ var exactVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)*(?:[.-][A-Za-z0-9]+)*
 var wildcardVersion = regexp.MustCompile(`(?:^|[.-])[xX](?:$|[.-])`)
 
 func (p Policy) Validate() error {
+	if err := validateRecipePolicy(p); err != nil {
+		return err
+	}
+	if err := validateMavenModels(p.MavenModels); err != nil {
+		return err
+	}
+	if p.Gradle != "" && (!numericVersion(p.Gradle) || compareVersions(p.Gradle, "7.3") < 0) {
+		return fmt.Errorf("Gradle target must be an exact version >= 7.3")
+	}
+	if p.GradleSHA256 != "" && (p.Gradle == "" || !regexp.MustCompile(`^[a-fA-F0-9]{64}$`).MatchString(p.GradleSHA256)) {
+		return fmt.Errorf("gradle_sha256 requires a Gradle target and a 64-character digest")
+	}
+	for id, version := range p.GradlePlugins {
+		if !mavenName.MatchString(id) || !exactVersion.MatchString(version) || wildcardVersion.MatchString(version) || strings.Contains(strings.ToUpper(version), "SNAPSHOT") {
+			return fmt.Errorf("Gradle plugin %s must use an exact release version", id)
+		}
+	}
 	if p.Java != 17 && p.Java != 21 && p.Java != 25 {
 		return fmt.Errorf("supported Java targets are 17, 21, and 25; got %d", p.Java)
 	}
@@ -217,4 +240,15 @@ func compareVersions(a, b string) int {
 		}
 	}
 	return 0
+}
+
+func WritePolicy(path string, p Policy) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeNewFile(path, append(data, '\n'))
 }

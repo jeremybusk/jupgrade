@@ -54,7 +54,7 @@ func jettyRuntimeFindings(model *repositoryModel, java int) []Finding {
 	return findings
 }
 
-func libraryRuntimeFindings(model *repositoryModel, java int) []Finding {
+func compatibilityFloors(java int) map[string]string {
 	floors := map[string]string{
 		"org.projectlombok:lombok":       map[int]string{17: "1.18.22", 21: "1.18.30", 25: "1.18.40"}[java],
 		"org.jacoco:jacoco-maven-plugin": map[int]string{17: "0.8.8", 21: "0.8.11", 25: "0.8.14"}[java],
@@ -62,6 +62,11 @@ func libraryRuntimeFindings(model *repositoryModel, java int) []Finding {
 	for _, name := range []string{"asm", "asm-tree", "asm-commons", "asm-analysis", "asm-util"} {
 		floors["org.ow2.asm:"+name] = map[int]string{17: "9.1", 21: "9.5", 25: "9.8"}[java]
 	}
+	return floors
+}
+
+func libraryRuntimeFindings(model *repositoryModel, java int) []Finding {
+	floors := compatibilityFloors(java)
 	var findings []Finding
 	for _, path := range model.paths {
 		p := model.poms[path]
@@ -86,7 +91,7 @@ func libraryRuntimeFindings(model *repositoryModel, java int) []Finding {
 // A Boot major upgrade requires type-aware API/configuration recipes. Merely
 // changing the parent, BOM or plugin must not be presented as such a migration.
 func springBootMigrationFindings(originals map[string][]byte, policy Policy) ([]Finding, error) {
-	model, err := newRepositoryModel(originals)
+	model, err := newRepositoryModel(originals, policy.MavenModels)
 	if err != nil {
 		return nil, err
 	}

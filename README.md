@@ -1,19 +1,17 @@
 # jupgrade
 
-A Go CLI for deterministic Java build upgrades in Maven repositories. Java 21 is
-the default target; Java 17 and 25 can be selected explicitly.
-It resolves local parent inheritance and dependency management, then changes Maven
-configuration and explicitly selected dependency versions. It scans for several Java migration risks, executes Maven on the selected JDK,
-and checks that a second migration would make no further edits. It does not yet
-rewrite Java APIs or perform framework migrations.
-
-OpenRewrite is not required. A type-aware Java transformation engine can be added
-later behind the Go CLI when the supported migrations need source changes.
+A Go CLI for deterministic Java modernization in Maven and Gradle repositories.
+Java 21 is the default; Java 17 and 25 are explicit targets. Built-in transformations
+upgrade build configuration and selected common dependencies without running a JVM.
+Cached Maven parent/BOM snapshots resolve external ownership. Optional pinned
+OpenRewrite recipes perform type-aware source/configuration changes on an isolated
+copy, then save exact edits for offline replay and recovery.
 
 ## Build and test
 
 Requires Go 1.22 or later. Applying plans needs no JVM; verifying them requires
-the selected target JDK and Maven, or an executable repository Maven wrapper.
+the selected target JDK and Maven/Gradle, or an executable repository wrapper.
+Source-recipe planning also needs a JVM and cached OpenRewrite artifacts.
 
 ```sh
 go build -buildvcs=false -o bin/jupgrade ./cmd/jupgrade
@@ -56,7 +54,7 @@ Scalar CLI flags override environment values. Policy precedence is built-in
 build/common preset, then a complete JSON policy, then environment and CLI version
 rules. A supplied JSON policy replaces the preset maps entirely. `--java` or
 `JUPGRADE_JAVA` overrides its Java field; it does not silently change its custom
-plugin versions. Repeatable `--dependency`, `--plugin`, and `--parent` rules merge
+plugin versions. Repeatable `--dependency`, `--plugin`, `--parent`, and `--gradle-plugin` rules merge
 by coordinate: CLI rules override matching environment entries, preserving other
 entries. The last repeated rule for a coordinate wins. Plans save the final resolved
 policy, so later environment changes do not affect apply, verify, or rollback.
@@ -73,6 +71,11 @@ policy, so later environment changes do not affect apply, verify, or rollback.
 | `--spring-boot` | `JUPGRADE_SPRING_BOOT` |
 | `--maven` | `JUPGRADE_MAVEN` |
 | `--maven-sha256` | `JUPGRADE_MAVEN_SHA256` |
+| `--resolve-maven` | `JUPGRADE_RESOLVE_MAVEN` |
+| `--gradle` / `--gradle-sha256` | `JUPGRADE_GRADLE` / `JUPGRADE_GRADLE_SHA256` |
+| `--gradle-plugin` | `JUPGRADE_GRADLE_PLUGINS` (comma-separated `ID=V`) |
+| `--recipe` | `JUPGRADE_RECIPES` (comma-separated aliases) |
+| `--gradle-command` / `--gradle-user-home` | `JUPGRADE_GRADLE_COMMAND` / `JUPGRADE_GRADLE_USER_HOME` |
 | `--out` / `--plan` | `JUPGRADE_OUT` / `JUPGRADE_PLAN` |
 | `--java-home` | `JUPGRADE_JAVA_HOME` (otherwise `JAVA_HOME`/`PATH`) |
 | `--maven-repo` | `JUPGRADE_MAVEN_REPO` |
@@ -109,9 +112,9 @@ remain schema 2. Wrapper script/JAR updates are not automated.
 `--spring-boot` is explicit opt-in and has no moving default. It targets existing
 `spring-boot-starter-parent`, `spring-boot-dependencies`, and
 `spring-boot-maven-plugin` declarations together. Same-major bumps produce a
-release-note/startup finding. Boot major changes are blockers because the CLI does
-not yet perform framework source/configuration migrations such as `javax` to
-`jakarta`. Other managed dependencies still require local ownership or explicit
+release-note/startup finding. Boot major changes require an explicit source recipe
+such as `--recipe boot3.5` or `--recipe boot4.0`. The Boot Gradle plugin is also
+selected by `--spring-boot`. Other managed dependencies still require local ownership or explicit
 external model resolution; the tool never invents BOM member versions.
 
 ## Common library preset
@@ -180,7 +183,7 @@ bin/jupgrade rollback --plan /tmp/service-java21-plan.json
 ```
 
 Omit `--policy` to use the selected built-in preset (default: build). Omit `--out` to print the plan as JSON
-to stdout. Plans are created with mode `0600`, contain source POM content, and are
+to stdout. Plans are created with mode `0600`, contain build and edited source content, and are
 bound to the absolute repository path. Wrapper plans also contain the wrapper properties. Existing output files are never overwritten.
 Save plans outside your repository, or in an ignored `.jupgrade` directory you create.
 
@@ -196,8 +199,11 @@ behavioral equivalence.
 `inspect` produces JSON with dependencies, managed dependencies, plugins, parents,
 and annotation processors. Each record includes the declaring POM, resolved version,
 owning POM/property, profile ID where applicable, and any resolution problem.
-It follows local parent chains and local BOM imports and honors dependency type and
-classifier when locating management. It does not invoke Maven or query repositories.
+Maven inspection follows local/captured parent chains and BOM imports and honors
+dependency type/classifier. Use `inspect --resolve-maven --maven-repo DIR` for cached
+external models. Gradle inspection currently lists literal dependency strings in
+build scripts; it is not a complete effective dependency graph. Inspection does not
+invoke a build or query remote repositories.
 
 The policy is a complete JSON object, not an overlay on the defaults. Generate it
 with `jupgrade policy`, then add entries such as:
@@ -235,10 +241,11 @@ EE-specific coordinates needs a separate recipe. Jetty 9.4 is an EOL family;
 this compatibility rule does not constitute a migration to a supported server line.
 Compiler, Surefire, Clean, Resources, and the appropriate JAR/WAR lifecycle plugin
 are activated locally when absent. Other plugins are updated when declared.
-Visible newer numeric versions, including locally inherited plugin versions, are retained. External parent POM plugin versions
-are not resolved during planning; newly added local pins can override them and
-are reported for review. Review your organization's parent POM policy before using
-the default pins across a fleet.
+Visible newer numeric versions, including inherited plugin versions established
+by local or captured external models, are retained. Without a captured model,
+external parent plugin defaults remain unresolved and locally added pins are
+reported for review. Review your organization's parent POM policy before using
+the defaults across a fleet.
 
 Dependency rules update existing versioned declarations, including
 `dependencyManagement`, BOM imports, plugin dependencies, and compiler
@@ -256,9 +263,9 @@ individual pins. Profile-local properties currently receive declaration-local pi
 Unresolved requested upgrades are blockers. In particular, a requested versionless
 dependency controlled by an external BOM/parent no longer silently remains unchanged.
 Upgrade the owning BOM/parent with a policy rule, or supply a local management
-declaration. External BOM contents, inherited parent-profile overrides, compound
-expressions, and general Maven-specific qualified-version ordering require further resolution
-or review. Merely requesting a BOM version does not establish its member versions.
+declaration. Captured external BOM contents are resolved; inherited parent-profile overrides,
+compound expressions, and general Maven-specific qualified-version ordering still
+require further resolution or review. Merely requesting a BOM version does not establish its member versions.
 Jetty's `9.4.x.vYYYYMMDD` releases are ordered by numeric release and build date;
 this exception is scoped to Jetty coordinates.
 
@@ -312,48 +319,118 @@ References: [Jetty 9.4.58 dependency versions](https://raw.githubusercontent.com
 - Repository paths that escape the root and symlinked module paths are rejected.
 - A `.jupgrade.lock` prevents competing CLI operations. If a process is killed,
   remove its stale lock only after checking that it is no longer running.
-- Verification requires Maven's runtime JDK to match the saved Java target, runs
-  `clean verify`, checks for source/input changes, and requires zero further edits.
-- POM-only plans use schema 2; wrapper plans use schema 3. Both validate all transformations together, including
+- Verification requires the build tool's runtime JDK to match the saved Java target,
+  runs Maven `clean verify` or Gradle `clean check`, checks for source/input changes,
+  and requires zero further edits. Gradle verification disables automatic toolchain
+  downloads and reruns tasks.
+- Native Maven POM-only plans use schema 2; wrapper plans use schema 3. Captured
+  Maven models, Gradle, and source recipes use schema 4. All validate all transformations together, including
   edits to owning properties and dependent modules. Regenerate old plans when the
   new ownership rules change their intended output.
 
+## Cached Maven parents and BOMs
+
+```sh
+# Capture the original AND selected target model versions from a populated cache.
+bin/jupgrade resolve --repo /path/to/service --preset common \
+  --maven-repo /path/to/.m2/repository --out /tmp/service-policy.json
+bin/jupgrade plan --repo /path/to/service --policy /tmp/service-policy.json \
+  --out /tmp/service-plan.json
+
+# Or resolve and plan together.
+bin/jupgrade plan --repo /path/to/service --resolve-maven --preset common \
+  --maven-repo /path/to/.m2/repository --out /tmp/service-plan.json
+```
+
+Resolution embeds each required POM and its SHA-256 in the policy/plan. It follows
+external parents and imported BOMs recursively, preserves versionless consumers,
+and never edits the cache. Missing models fail explicitly; populate the cache with
+Maven before resolving. Replay uses the saved models even if the cache changes.
+This is bounded static model resolution: Maven settings, active profile evaluation,
+compound property interpolation and arbitrary effective-model behavior are not
+reproduced. Ambiguous requested ownership blocks rather than inventing a version.
+
+## Gradle Java builds
+
+```sh
+bin/jupgrade plan --repo /path/to/gradle-service --java 21 --preset common \
+  --gradle 8.14.3 --gradle-plugin org.springframework.boot=3.5.16 \
+  --out /tmp/gradle-plan.json
+bin/jupgrade verify --plan /tmp/gradle-plan.json --java-home /path/to/jdk-21
+```
+
+Supports literal Groovy and Kotlin DSL Java builds, declared subprojects, Java
+toolchains and source/target/release pins, literal dependency strings/map notation,
+`gradle.properties` references, plugin versions, and the default
+`gradle/libs.versions.toml` catalog. Shared catalog versions stay shared when all
+consumers agree; otherwise only the selected declaration receives a pin. Selected
+versionless dependencies require ownership evidence instead of a guessed override.
+
+Saved defaults are Gradle 8.14.3 for Java 17/21 and 9.1.0 for Java 25. Existing
+standard HTTPS `gradle-X-bin.zip`/`all.zip` wrapper URLs are upgraded while preserving
+mirrors, archive type and checksums. A changed checksummed distribution needs
+`--gradle-sha256`. Wrapper scripts/JARs are not generated or upgraded. Verification
+uses `gradlew`, installed Gradle, or `--gradle-command`, and checks the saved minimum
+Gradle version and exact runtime Java major.
+
+Dynamic includes, composite builds, custom project directories, applied scripts,
+rich catalog versions, multiline/escaped build strings and unresolved target
+expressions block. Kotlin DSL support does not include Kotlin-language/compiler
+migration. Mixed Maven/Gradle roots require selecting one build root. Boot/Gradle
+compatibility is checked; Boot 3 with the Java 25/Gradle 9 defaults blocks.
+
+## Pinned source recipes
+
+```sh
+bin/jupgrade recipes
+bin/jupgrade plan --repo /path/to/service --recipe string-format --java 21 \
+  --offline --maven-repo /path/to/.m2/repository --out /tmp/source-plan.json
+
+# An explicit framework family and exact release must agree.
+bin/jupgrade plan --repo /path/to/boot-service --recipe boot3.5 --recipe java21 \
+  --spring-boot 3.5.16 --resolve-maven --java 21 \
+  --maven-repo /path/to/.m2/repository --out /tmp/boot-plan.json
+```
+
+Aliases: `string-format`, `base64`, `java17`, `java21`, `java25`, `boot3.5`, and
+`boot4.0`. Java aliases require the matching Java target; Boot aliases require a
+matching explicit Boot target. The engine is pinned to Maven plugin 6.46.1 or
+Gradle plugin 7.41.0, with `rewrite-migrate-java:3.42.1` and
+`rewrite-spring:6.37.1`. `recipes` prints full recipe names and coordinates.
+
+Recipe planning executes repository build configuration on a temporary copy using
+the chosen JVM. Cache the pinned engine/recipe JARs and their dependencies first;
+`--offline` uses that cache. Two worker runs must converge before native build
+upgrades are merged. Failures, reported parser errors, unsupported paths, file
+creation/deletion/renaming, and nonconvergence produce no original repository edits.
+Currently recipes support changes to existing source/resource/build files only;
+some framework migrations will need broader file lifecycle support. Maven explicit
+version pins are checked against numeric downgrades and unresolved pin removal.
+Gradle source migrations need additional effective-model validation for such pins.
+
+The plan records artifact/cache digests, context hashes, and exact before/after
+bytes. Apply, verify convergence and rollback replay these bytes without executing
+OpenRewrite again. New or changed context requires a fresh plan. Keep plan files
+trusted and outside the repository or in `.jupgrade`; hashes provide integrity and
+reproducibility checks, not authentication or a sandbox for build scripts.
+
 ## Current scope and next steps
 
-The CLI reports findings for removed Java EE APIs, old internal Base64 APIs,
-internal JDK access, reflective accessibility, and selected runtime/CI pins. This
-is a heuristic scan that can flag comments and does not exhaustively detect Java
-8-to-21 incompatibilities. Toolchains, alternate compiler executables, and targets
-above the chosen Java version are blockers. Runtime images, CI configuration,
-Gradle projects, arbitrary compiler arguments, full Maven effective-model resolution,
-external BOM resolution, and framework/API rewrites are not automated yet. Root
-Gradle Groovy/Kotlin and mixed Maven/Gradle builds receive explicit unsupported-build
-errors instead of being treated as Maven projects.
+Heuristic findings cover removed Java EE/Base64 APIs, internal JDK access,
+reflective accessibility and selected runtime/CI pins. Scans are not an exhaustive
+Java migration analysis. Native Maven toolchains, alternate compiler executables,
+arbitrary compiler arguments, runtime images and CI upgrades still require review.
+Recipe and build success do not prove application startup or behavioral equivalence.
 
-The priorities for expanding coverage are:
+Next priorities are full effective-model discovery for dynamic Gradle/Maven builds,
+recipe file creation/deletion, and a pinned corpus of real Boot applications with
+application startup tests. Expand by project shape rather than clone count. Add
+batch reports, readable plan diffs and shell completion as the CLI grows.
 
-1. Effective Maven model discovery from a supplied/cached snapshot: resolve external
-   parent/BOM ownership while recording every resolved input in the plan.
-2. Gradle Kotlin/Groovy support, starting with wrappers, toolchains, version catalogs,
-   and a worker that understands Gradle's model. Java 25 runtime support starts with
-   Gradle 9.1, while Boot 3.5 documents Gradle 7/8 build support: choosing versions
-   independently can create an unsupported combination.
-3. Type-aware source/configuration recipes for Boot major upgrades and common
-   removed APIs, using OpenRewrite as a JVM worker where useful.
-4. Pinned external test repositories representing Maven reactors, Boot parent/BOM
-   applications, Gradle Groovy/Kotlin/version catalogs, and small runtime services.
-   For each, require deterministic planning, build/tests, application startup,
-   convergence, and exact rollback. Expand by project shape instead of clone count.
-5. Human-readable plan diffs, recipe discovery, and resumable batch reports. Add
-   Cobra/completion when those command surfaces justify another dependency.
-
-[Gradle compatibility](https://docs.gradle.org/current/userguide/compatibility.html),
-[Boot 3.5 requirements](https://docs.spring.io/spring-boot/3.5/system-requirements.html).
-
-Useful references:
-[Maven compiler release configuration](https://maven.apache.org/plugins/maven-compiler-plugin/examples/set-compiler-release.html),
+References: [Gradle compatibility](https://docs.gradle.org/current/userguide/compatibility.html),
+[Boot 3.5 requirements](https://docs.spring.io/spring-boot/3.5/system-requirements.html),
 [Maven effective POM](https://maven.apache.org/plugins/maven-help-plugin/effective-pom-mojo.html),
-[OpenRewrite Java 21 migration](https://docs.openrewrite.org/recipes/java/migrate/upgradetojava21).
+[OpenRewrite Maven plugin](https://docs.openrewrite.org/reference/rewrite-maven-plugin).
 
 ## Real Maven integration test
 
@@ -399,7 +476,7 @@ Run the application's own startup check after downloading the upgraded plugin.
 The corpus runner copies each supplied repository to a temporary directory and
 checks deterministic/no-write planning, apply/reapply, zero-edit replanning, and
 exact rollback. It checks that the original repositories are unchanged. Add
-`--verify` to also run Maven using the configured target JDK and artifact cache.
+`--verify` to also run Maven or Gradle using the configured target JDK and artifact cache.
 Blocked and failed repositories return a nonzero exit code and JSON findings;
 passing the default run proves transformation/recovery, not compilation or startup.
 It requires Python 3 and a built CLI.
@@ -407,7 +484,7 @@ It requires Python 3 and a built CLI.
 ```sh
 go build -buildvcs=false -o bin/jupgrade ./cmd/jupgrade
 python3 scripts/test-corpus.py testdata/java8 testdata/reactor \
-  /src/jupgrade/testrepos/NewsFeedSite --java 21 --preset common
+  testdata/gradle-groovy testdata/gradle-kotlin /src/jupgrade/testrepos/NewsFeedSite --java 21 --preset common
 
 JUPGRADE_MAVEN_REPO=/tmp/jupgrade-m2 JUPGRADE_OFFLINE=1 \
   python3 scripts/test-corpus.py testdata/java8 testdata/reactor --verify
@@ -417,3 +494,37 @@ Java 17/21/25 plan, apply, verification preflight, and rollback paths have autom
 coverage. The real Maven fixtures and Jetty scanner test require Java 21; Java 17/25
 build and runtime smoke tests still need dedicated JDKs and a CI matrix before
 claiming equivalent end-to-end coverage.
+
+The new opt-in tests exercise a cached external JUnit BOM, a real type-aware
+`String.format` rewrite followed by Java 21 compilation, and a Gradle Java build:
+
+```sh
+JUPGRADE_INTEGRATION=1 JUPGRADE_OFFLINE=1 \
+  go test -v ./internal/upgrade -run TestExternalJUnitBOMMavenIntegration -count=1
+JUPGRADE_SOURCE_INTEGRATION=1 \
+  go test -v ./internal/upgrade -run TestTypeAwareRecipeMavenIntegration -count=1
+JUPGRADE_BOOT_SOURCE_INTEGRATION=1 \
+  go test -v ./internal/upgrade -run TestBootMajorSourceAndContextMavenIntegration -count=1
+JUPGRADE_GRADLE_INTEGRATION=1 JUPGRADE_GRADLE_COMMAND=/path/to/gradle \
+  go test -v ./internal/upgrade -run TestGradleJava21BuildIntegration -count=1
+```
+
+Gradle needs local socket access even without a long-lived daemon. Environments
+that forbid sockets cannot run its real build test. The source integration test
+proves the API recipe path. `testdata/boot-context` exercises a real Boot 3.5.16 to
+4.0.8 migration with a non-web context startup test, Java 21 bytecode and rollback.
+Larger Boot applications still need corpus and application-specific startup coverage
+before broad unattended framework migrations.
+
+Additional corpus paths exercise saved Maven models and source receipts:
+
+```sh
+python3 scripts/test-corpus.py testdata/maven-bom --resolve-maven --verify
+python3 scripts/test-corpus.py testdata/source-recipe --recipe string-format --verify
+python3 scripts/test-corpus.py testdata/boot-context --preset build \
+  --recipe boot4.0 --recipe java21 --spring-boot 4.0.8 --resolve-maven --verify
+```
+
+Set the artifact-cache/JDK environment variables above as needed. The runner
+replans with the captured policy, so source replay and model resolution do not rely
+on changing external state. Originals are never modified.

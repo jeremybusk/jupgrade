@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise jupgrade on isolated copies of Maven repos; never edit the originals."""
+"""Exercise jupgrade on isolated copies of Maven/Gradle repos; never edit the originals."""
 import argparse
 import hashlib
 import json
@@ -34,20 +34,32 @@ def exercise(binary, source, args):
         repo = work / "repo"
         shutil.copytree(source, repo, symlinks=True, ignore=shutil.ignore_patterns(*IGNORED))
 
-        def command(*parts, allow_blockers=False):
+        def command(*parts, allow_blockers=False, replay=False):
+            env = os.environ.copy()
+            if replay:
+                for key in ("JAVA", "PRESET", "POLICY", "DEPENDENCIES", "PLUGINS", "PARENTS", "SPRING_BOOT", "MAVEN", "MAVEN_SHA256", "GRADLE", "GRADLE_SHA256", "GRADLE_PLUGINS", "RECIPES", "RESOLVE_MAVEN"):
+                    env.pop("JUPGRADE_" + key, None)
             result = subprocess.run(
                 [str(binary), *map(str, parts)], capture_output=True, text=True,
-                timeout=args.timeout,
+                timeout=args.timeout, env=env,
             )
             if result.returncode and not allow_blockers:
                 output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
                 raise RuntimeError(output[-20000:])
             return result
 
-        def plan(path):
+        def plan(path, policy=None):
+            options = ["--policy", policy] if policy else ["--java", args.java, "--preset", args.preset]
+            if not policy:
+                if args.resolve_maven:
+                    options.append("--resolve-maven")
+                for recipe in args.recipe:
+                    options.extend(["--recipe", recipe])
+                if args.spring_boot:
+                    options.extend(["--spring-boot", args.spring_boot])
             result = command(
-                "plan", "--repo", repo, "--out", path,
-                "--java", args.java, "--preset", args.preset, allow_blockers=True,
+                "plan", "--repo", repo, "--out", path, *options,
+                allow_blockers=True, replay=policy is not None,
             )
             if not path.exists():
                 raise RuntimeError(result.stderr.strip())
@@ -60,7 +72,9 @@ def exercise(binary, source, args):
         before = snapshot(repo)
         first_path, second_path = work / "first.json", work / "second.json"
         first, blockers = plan(first_path)
-        second, _ = plan(second_path)
+        saved_policy = work / "policy.json"
+        saved_policy.write_text(json.dumps(first["policy"]))
+        second, _ = plan(second_path, saved_policy)
         if first != second or snapshot(repo) != before:
             raise RuntimeError("planning was nondeterministic or changed inputs")
         report["files"] = len(first["files"])
@@ -73,7 +87,7 @@ def exercise(binary, source, args):
             command("apply", "--plan", first_path)
             if snapshot(repo) != applied:
                 raise RuntimeError("reapply changed files")
-            repeat, blockers = plan(work / "repeat.json")
+            repeat, blockers = plan(work / "repeat.json", saved_policy)
             if repeat["files"] or blockers:
                 raise RuntimeError("migration did not converge")
             if args.verify:
@@ -90,11 +104,14 @@ def exercise(binary, source, args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("repos", nargs="+", type=Path, help="repository roots containing pom.xml")
+    parser.add_argument("repos", nargs="+", type=Path, help="Maven or Gradle repository roots")
     parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[1] / "bin/jupgrade")
     parser.add_argument("--java", type=int, choices=(17, 21, 25), default=21)
     parser.add_argument("--preset", choices=("build", "common"), default="common")
-    parser.add_argument("--verify", action="store_true", help="also run each repository's Maven build")
+    parser.add_argument("--verify", action="store_true", help="also run each repository's build and tests")
+    parser.add_argument("--resolve-maven", action="store_true", help="capture cached parent/BOM models")
+    parser.add_argument("--recipe", action="append", default=[], help="pinned source recipe alias; repeatable")
+    parser.add_argument("--spring-boot", help="exact Spring Boot target for framework recipes")
     parser.add_argument("--timeout", type=int, default=300, help="timeout in seconds per CLI command")
     args = parser.parse_args()
     binary = args.binary.resolve()

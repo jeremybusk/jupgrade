@@ -13,7 +13,7 @@ import (
 
 func cleanConfigEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"REPO", "POLICY", "JAVA", "PRESET", "SPRING_BOOT", "DEPENDENCIES", "PLUGINS", "PARENTS", "OUT", "PLAN", "JAVA_HOME", "MAVEN", "MAVEN_SHA256", "MAVEN_REPO", "PROFILES", "OFFLINE", "TIMEOUT"} {
+	for _, key := range []string{"GRADLE", "GRADLE_SHA256", "GRADLE_PLUGINS", "GRADLE_COMMAND", "GRADLE_USER_HOME", "RECIPES", "RESOLVE_MAVEN", "REPO", "POLICY", "JAVA", "PRESET", "SPRING_BOOT", "DEPENDENCIES", "PLUGINS", "PARENTS", "OUT", "PLAN", "JAVA_HOME", "MAVEN", "MAVEN_SHA256", "MAVEN_REPO", "PROFILES", "OFFLINE", "TIMEOUT"} {
 		t.Setenv("JUPGRADE_"+key, "")
 	}
 	// Empty preset means the build preset; empty timeout is invalid by design.
@@ -225,5 +225,19 @@ func TestUpgradeAppliesBuildsAndKeepsRecoveryOnFailure(t *testing.T) {
 				t.Fatal("recovery lost original")
 			}
 		})
+	}
+}
+
+func TestGradleAndRecipeOverrides(t *testing.T) {
+	cleanConfigEnv(t)
+	t.Setenv("JUPGRADE_GRADLE", "8.13")
+	t.Setenv("JUPGRADE_GRADLE_PLUGINS", "org.springframework.boot=3.5.10,example.plugin=1.0")
+	t.Setenv("JUPGRADE_RECIPES", "base64")
+	p, err := resolvedPolicy(t, "--gradle", "8.14.3", "--gradle-plugin", "org.springframework.boot=3.5.16", "--recipe", "string-format")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Gradle != "8.14.3" || p.GradlePlugins["org.springframework.boot"] != "3.5.16" || p.GradlePlugins["example.plugin"] != "1.0" || len(p.Recipes) != 1 || p.Recipes[0] != "string-format" {
+		t.Fatal(p)
 	}
 }

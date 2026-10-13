@@ -334,12 +334,23 @@ func migratePOMWithModel(original []byte, path string, policy Policy, model *rep
 		})
 		if model != nil {
 			// Include locally inherited plugin versions when activating a plugin.
-			for owner := model.poms[path].parent; owner != nil; owner = owner.parent {
+			effectiveParent := model.poms[path].parent
+			context := &pomModel{path: path, data: data, root: root, parent: effectiveParent}
+			if declared := root.child("parent"); declared != nil {
+				version := model.resolve(context, declared, textAt(data, declared, "version"))
+				if version.err == nil {
+					if parent := model.localArtifact(coordinate(data, declared), version.value); parent != nil {
+						effectiveParent = parent
+						context.parent = parent
+					}
+				}
+			}
+			for owner := effectiveParent; owner != nil; owner = owner.parent {
 				walk(owner.root, func(n *element) {
 					if !pluginNode(n) || profileOf(n) != nil || coordinate(owner.data, n) != coord {
 						return
 					}
-					v := model.resolve(model.poms[path], model.poms[path].root, textAt(owner.data, n, "version"))
+					v := model.resolve(context, root, textAt(owner.data, n, "version"))
 					if v.err == nil && numericVersion(v.value) && numericVersion(target) && compareVersions(v.value, target) > 0 {
 						target = v.value
 					}

@@ -51,20 +51,62 @@ func verifyPlan(p upgrade.Plan, options upgrade.VerifyOptions) error {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: jupgrade <inspect|plan|upgrade|apply|verify|rollback|policy> [options]")
+		return errors.New("usage: jupgrade <inspect|resolve|recipes|plan|upgrade|apply|verify|rollback|policy> [options]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	switch args[0] {
 	case "inspect":
 		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root (JUPGRADE_REPO)")
+		cache := flags.String("maven-repo", envDefault("JUPGRADE_MAVEN_REPO", ""), "cached parent/BOM repository")
+		resolve := flags.Bool("resolve-maven", false, "capture cached Maven models for inspection (JUPGRADE_RESOLVE_MAVEN)")
+		config := bindPolicy(flags)
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
 		}
-		report, err := upgrade.Inspect(*repo)
+		p, err := config.resolve()
+		if err != nil {
+			return err
+		}
+		enabled, err := environmentBool(flags, "resolve-maven", "JUPGRADE_RESOLVE_MAVEN", *resolve)
+		if err != nil {
+			return err
+		}
+		if enabled {
+			p, err = upgrade.ResolveMaven(*repo, p, *cache)
+			if err != nil {
+				return err
+			}
+		}
+		report, err := upgrade.InspectWithPolicy(*repo, p)
 		if err != nil {
 			return err
 		}
 		return printJSON(report)
+	case "recipes":
+		if err := parseFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		return printJSON(upgrade.RecipeCatalog())
+	case "resolve":
+		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "Maven repository root (JUPGRADE_REPO)")
+		cache := flags.String("maven-repo", envDefault("JUPGRADE_MAVEN_REPO", ""), "cached parent/BOM repository (JUPGRADE_MAVEN_REPO)")
+		output := flags.String("out", envDefault("JUPGRADE_OUT", ""), "new resolved policy file; omit to print JSON")
+		config := bindPolicy(flags)
+		if err := parseFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		p, err := config.resolve()
+		if err != nil {
+			return err
+		}
+		p, err = upgrade.ResolveMaven(*repo, p, *cache)
+		if err != nil {
+			return err
+		}
+		if *output == "" {
+			return printJSON(p)
+		}
+		return upgrade.WritePolicy(*output, p)
 	case "policy":
 		config := bindPolicy(flags)
 		if err := parseFlags(flags, args[1:]); err != nil {
@@ -79,33 +121,41 @@ func run(args []string) error {
 		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root (JUPGRADE_REPO)")
 		config := bindPolicy(flags)
 		output := flags.String("out", envDefault("JUPGRADE_OUT", ""), "new plan file; plan prints JSON if omitted (JUPGRADE_OUT)")
+		resolve := flags.Bool("resolve-maven", false, "capture cached parent/BOM POMs in the plan (JUPGRADE_RESOLVE_MAVEN)")
+		vf := bindVerify(flags)
+		offline := bindOffline(flags)
+		modelCache := vf.repo
 		dryRun := false
-		var vf verifyFlags
-		var offline *bool
 		if args[0] == "upgrade" {
 			flags.BoolVar(&dryRun, "dry-run", false, "save/print the plan without applying or building")
-			vf = bindVerify(flags)
-			offline = bindOffline(flags)
 		}
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
 		}
-		var options upgrade.VerifyOptions
-		if args[0] == "upgrade" && !dryRun {
-			if *output == "" {
-				return errors.New("upgrade requires --out PATH to save a recoverable plan; use --dry-run to preview")
-			}
-			var err error
-			options, err = vf.options(flags, *offline)
-			if err != nil {
-				return err
-			}
+		if args[0] == "upgrade" && !dryRun && *output == "" {
+			return errors.New("upgrade requires --out PATH to save a recoverable plan; use --dry-run to preview")
+		}
+		options, err := vf.options(flags, *offline)
+		if err != nil {
+			return err
 		}
 		p, err := config.resolve()
 		if err != nil {
 			return err
 		}
-		plan, err := upgrade.CreatePlan(*repo, p)
+		resolveModels, err := environmentBool(flags, "resolve-maven", "JUPGRADE_RESOLVE_MAVEN", *resolve)
+		if err != nil {
+			return err
+		}
+		if resolveModels {
+			p, err = upgrade.ResolveMaven(*repo, p, *modelCache)
+			if err != nil {
+				return err
+			}
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		plan, err := upgrade.CreateRecipePlan(ctx, *repo, p, options)
 		if err != nil {
 			return err
 		}
@@ -164,19 +214,25 @@ func run(args []string) error {
 		return nil
 	case "help", "-h", "--help":
 		fmt.Println(`jupgrade inspect [--repo DIR]
+jupgrade resolve [--repo DIR] [--out POLICY.json] [--maven-repo CACHE]
 jupgrade plan [--repo DIR] [--out PLAN.json] [--java 17|21|25] [--preset build|common]
 jupgrade upgrade --out PLAN.json [policy/build options] [--dry-run]
 jupgrade apply --plan PLAN.json
 jupgrade verify --plan PLAN.json [--java-home DIR] [--profiles LIST] [--offline]
 jupgrade rollback --plan PLAN.json
 jupgrade policy [--java 17|21|25] [--preset build|common]
+jupgrade recipes
 
 Policy options: --policy FILE, --dependency G:A=V, --plugin G:A=V,
---parent G:A=V, --spring-boot VERSION, --maven VERSION [--maven-sha256 HEX]. Version rules are repeatable.
+--parent G:A=V, --spring-boot VERSION, --maven VERSION [--maven-sha256 HEX],
+--gradle VERSION [--gradle-sha256 HEX], --gradle-plugin ID=V, --recipe ALIAS.
+Version rules are repeatable. Use --resolve-maven to capture cached parent/BOM models.
 Defaults: Java 21 and pinned build plugins; existing newer versions are retained.
 Use jupgrade COMMAND --help for options and their JUPGRADE_* environment variables.
-Planning is offline; the resolved policy is saved in the plan.
-Gradle and Spring Boot major source migrations are not implemented yet.`)
+Native planning is offline; the resolved policy is saved in the plan.
+Gradle supports literal Groovy/Kotlin DSL, toolchains and version catalogs.
+Source recipes execute pinned OpenRewrite workers on isolated copies.
+Use jupgrade recipes to list supported Java and Spring Boot recipes.`)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])

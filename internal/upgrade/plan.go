@@ -25,6 +25,7 @@ type File struct {
 }
 
 type Plan struct {
+	Build    string            `json:"build,omitempty"`
 	Schema   int               `json:"schema"`
 	Root     string            `json:"root"`
 	Policy   Policy            `json:"policy"`
@@ -235,7 +236,7 @@ func transformRepository(originals map[string][]byte, policy Policy) (map[string
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	model, err := newRepositoryModel(contents)
+	model, err := newRepositoryModel(contents, policy.MavenModels)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -252,7 +253,7 @@ func transformRepository(originals map[string][]byte, policy Policy) (map[string
 		changes = append(changes, actions...)
 		findings = append(findings, issues...)
 	}
-	afterModel, err := newRepositoryModel(contents)
+	afterModel, err := newRepositoryModel(contents, policy.MavenModels)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -280,19 +281,26 @@ func CreatePlan(root string, policy Policy) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	if err := requireMaven(root); err != nil {
+	build, err := detectBuild(root)
+	if err != nil {
 		return Plan{}, err
 	}
+	if build == "gradle" && policy.Gradle == "" {
+		policy.Gradle = gradleTarget(policy.Java)
+	}
 	schema := 2
-	if policy.Maven != "" {
+	if len(policy.MavenModels) > 0 || build == "gradle" || len(policy.Recipes) > 0 {
+		schema = 4
+	}
+	if policy.Maven != "" && schema < 3 {
 		schema = 3
 	}
-	p := Plan{Schema: schema, Root: root, Policy: policy, Inputs: map[string]string{}, Files: []File{}, Changes: []Change{}, Findings: []Finding{}}
-	originals, err := readRepositoryInputs(root, policy)
+	p := Plan{Build: build, Schema: schema, Root: root, Policy: policy, Inputs: map[string]string{}, Files: []File{}, Changes: []Change{}, Findings: []Finding{}}
+	originals, err := readBuildInputs(root, policy, build)
 	if err != nil {
 		return p, err
 	}
-	transformed, changes, findings, err := transformRepository(originals, policy)
+	transformed, changes, findings, err := transformBuild(originals, policy, build)
 	if err != nil {
 		return p, err
 	}
@@ -357,7 +365,7 @@ func scanFindings(p *Plan) error {
 			return err
 		}
 		isJava := strings.HasSuffix(path, ".java")
-		isRuntime := entry.Name() == "Dockerfile" || strings.HasPrefix(entry.Name(), "Dockerfile.") || entry.Name() == ".java-version" || entry.Name() == ".sdkmanrc" || entry.Name() == "Jenkinsfile" || strings.HasPrefix(relative, ".github"+string(filepath.Separator)) || strings.HasPrefix(relative, ".mvn"+string(filepath.Separator)) || entry.Name() == "mvnw" || entry.Name() == "mvnw.cmd" || entry.Name() == "toolchains.xml"
+		isRuntime := entry.Name() == "gradlew" || entry.Name() == "gradlew.bat" || entry.Name() == "Dockerfile" || strings.HasPrefix(entry.Name(), "Dockerfile.") || entry.Name() == ".java-version" || entry.Name() == ".sdkmanrc" || entry.Name() == "Jenkinsfile" || strings.HasPrefix(relative, ".github"+string(filepath.Separator)) || strings.HasPrefix(relative, ".mvn"+string(filepath.Separator)) || entry.Name() == "mvnw" || entry.Name() == "mvnw.cmd" || entry.Name() == "toolchains.xml"
 		if !isJava && !isRuntime {
 			return nil
 		}
@@ -367,6 +375,12 @@ func scanFindings(p *Plan) error {
 		}
 		p.Inputs[relative] = hash(data)
 		if isJava {
+			for _, file := range p.Files {
+				if file.Path == relative {
+					data = []byte(file.After)
+					break
+				}
+			}
 			for i, re := range compiled {
 				if re.Match(data) {
 					p.Findings = append(p.Findings, Finding{"warning", relative, sourceRisks[i].message})
@@ -422,7 +436,13 @@ func ReadPlan(path string) (Plan, error) {
 }
 
 func (p Plan) Validate() error {
-	if p.Schema != 1 && p.Schema != 2 && p.Schema != 3 {
+	if p.Schema < 4 && (len(p.Policy.MavenModels) > 0 || len(p.Policy.Recipes) > 0 || p.Build == "gradle") {
+		return fmt.Errorf("captured models, source recipes and Gradle require schema 4")
+	}
+	if p.Schema == 4 {
+		return validateModernPlan(p)
+	}
+	if p.Schema != 1 && p.Schema != 2 && p.Schema != 3 && p.Schema != 4 {
 		return fmt.Errorf("unsupported plan schema %d", p.Schema)
 	}
 	if p.Policy.Maven != "" && p.Schema < 3 {
@@ -454,7 +474,7 @@ func (p Plan) Validate() error {
 		if hash([]byte(file.Before)) != file.BeforeSHA || hash([]byte(file.After)) != file.AfterSHA || p.Inputs[file.Path] != file.BeforeSHA {
 			return fmt.Errorf("content/hash mismatch: %s", file.Path)
 		}
-		if filepath.Base(file.Path) != "pom.xml" && !(p.Schema == 3 && p.Policy.Maven != "" && file.Path == mavenWrapperProperties) {
+		if filepath.Base(file.Path) != "pom.xml" && !(p.Schema >= 3 && p.Policy.Maven != "" && file.Path == mavenWrapperProperties) {
 			return fmt.Errorf("plan may edit only POMs and an explicitly targeted Maven wrapper")
 		}
 		// A plan is reviewable data, but should not become a generic arbitrary
@@ -472,7 +492,7 @@ func (p Plan) Validate() error {
 	}
 	if p.Schema >= 2 {
 		for relative, h := range p.Inputs {
-			if seen[relative] || (filepath.Base(relative) != "pom.xml" && !(p.Schema == 3 && p.Policy.Maven != "" && relative == mavenWrapperProperties)) {
+			if seen[relative] || (filepath.Base(relative) != "pom.xml" && !(p.Schema >= 3 && p.Policy.Maven != "" && relative == mavenWrapperProperties)) {
 				continue
 			}
 			path, err := safePath(root, relative)
