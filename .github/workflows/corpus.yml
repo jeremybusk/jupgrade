@@ -1,0 +1,52 @@
+name: Real project corpus
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: Pinned project case
+        type: choice
+        required: true
+        options:
+          - news-feed
+          - commons-lang
+          - petclinic-maven
+          - petclinic-gradle
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+          build-scan-publish: false
+          dependency-graph: disabled
+      - run: go build -buildvcs=false -o bin/jupgrade ./cmd/jupgrade
+      - name: Fetch, modernize, build, start, converge, and roll back
+        env:
+          CORPUS_CASE: ${{ inputs.case }}
+        run: |
+          mkdir -p reports
+          python3 scripts/test-corpus.py --manifest scripts/corpus.json --case "$CORPUS_CASE" --checkout-dir "$RUNNER_TEMP/corpus" --fetch --warm-cache --verify --startup --timeout 1200 > reports/corpus.json
+      - name: Preserve corpus results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ inputs.case }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 14

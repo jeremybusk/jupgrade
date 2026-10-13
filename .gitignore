@@ -1,3 +1,4 @@
 /bin/
 /.jupgrade/
 /reports/
+__pycache__/

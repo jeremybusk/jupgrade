@@ -53,6 +53,7 @@ func TestRecipeFileLifecycleApplyResumeVerifyInventoryAndRollback(t *testing.T) 
 		t.Fatal(err)
 	}
 	// Simulate an interruption after one destination has been created.
+	writeTestFile(t, p.Root, "src/main/java/.jupgrade-write-abandoned", "unfinished temporary data")
 	for _, file := range p.Files {
 		if file.Action == "create" && file.After != "" {
 			if err := atomicCreate(p.Root, file.Path, []byte(file.After), file.AfterMode); err != nil {

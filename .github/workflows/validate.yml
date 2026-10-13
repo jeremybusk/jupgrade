@@ -24,6 +24,8 @@ jobs:
           cache: false
       - run: go test -race ./...
       - run: go vet ./...
+      - run: go build -buildvcs=false -o bin/jupgrade ./cmd/jupgrade
+      - run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
   gradle:
     name: Gradle on Java ${{ matrix.java }}

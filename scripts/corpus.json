@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "name": "news-feed",
+      "url": "https://github.com/Azure-Samples/NewsFeedSite.git",
+      "commit": "76a406c34455c524ebe07d84768cd37400a5208c",
+      "root": ".",
+      "java": 21,
+      "preset": "common",
+      "startup": {
+        "command": ["mvn", "-B", "-ntp", "-Dmaven.repo.local={maven_repo}", "-f", "service/pom.xml", "jetty:run"],
+        "port": 8080,
+        "url": "http://127.0.0.1:{port}/demo/",
+        "status": 200
+      }
+    },
+    {
+      "name": "commons-lang",
+      "url": "https://github.com/apache/commons-lang.git",
+      "commit": "29ccc7665f3bc5d84155a3092ab2209a053324e6",
+      "root": ".",
+      "java": 21,
+      "preset": "build",
+      "resolve_maven": true
+    },
+    {
+      "name": "petclinic-maven",
+      "url": "https://github.com/spring-projects/spring-petclinic.git",
+      "commit": "1f89996e1ff53eb0d3990bbb68e382b118b1b556",
+      "root": ".",
+      "java": 21,
+      "preset": "build",
+      "resolve_maven": true,
+      "exclude": ["build.gradle", "settings.gradle", "gradlew", "gradlew.bat", "gradle"],
+      "plan_args": ["--spring-boot", "3.5.16"],
+      "startup": {
+        "command": ["java", "-jar", "{artifact}", "--server.port={port}"],
+        "artifact": "target/*.jar",
+        "url": "http://127.0.0.1:{port}/",
+        "body_contains": "Welcome",
+        "status": 200
+      }
+    },
+    {
+      "name": "petclinic-gradle",
+      "url": "https://github.com/spring-projects/spring-petclinic.git",
+      "commit": "1f89996e1ff53eb0d3990bbb68e382b118b1b556",
+      "root": ".",
+      "java": 21,
+      "preset": "build",
+      "exclude": ["pom.xml", "mvnw", "mvnw.cmd", ".mvn"],
+      "plan_args": ["--spring-boot", "3.5.16", "--gradle", "8.14.3"],
+      "gradle_checksums": {
+        "bin": "bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
+        "all": "ed1a8d686605fd7c23bdf62c7fc7add1c5b23b2bbc3721e661934ef4a4911d7c"
+      },
+      "startup": {
+        "command": ["java", "-jar", "{artifact}", "--server.port={port}"],
+        "prepare": ["./gradlew", "--no-daemon", "bootJar"],
+        "artifact": "build/libs/*.jar",
+        "url": "http://127.0.0.1:{port}/",
+        "body_contains": "Welcome",
+        "status": 200
+      }
+    }
+  ]
+}

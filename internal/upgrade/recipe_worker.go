@@ -33,7 +33,7 @@ func readRecipeInputs(root string) (map[string][]byte, error) {
 			}
 			return nil
 		}
-		if entry.Name() == ".jupgrade.lock" {
+		if entry.Name() == ".jupgrade.lock" || strings.HasPrefix(entry.Name(), ".jupgrade-write-") {
 			return nil
 		}
 		relative, err := filepath.Rel(root, path)

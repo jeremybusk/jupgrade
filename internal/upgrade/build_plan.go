@@ -11,7 +11,18 @@ import (
 
 func readBuildInputs(root string, policy Policy, build string) (map[string][]byte, error) {
 	if len(policy.Recipes) > 0 {
-		return readRecipeInputs(root)
+		inputs, err := readRecipeInputs(root)
+		if err != nil {
+			return nil, err
+		}
+		if policy.RecipeRun != nil {
+			for _, file := range policy.RecipeRun.Files {
+				if _, err := fileState(root, file); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return inputs, nil
 	}
 	if build == "gradle" {
 		return readGradleInputs(root)

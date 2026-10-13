@@ -613,3 +613,47 @@ remaining sequence is effective build-model
 discovery, a pinned real-project corpus with startup checks, and CLI plan/batch
 improvements. Advance after the preceding step's required validation passes,
 with a separate formatted commit for each completed step.
+
+## Pinned real-project corpus
+
+[corpus.json](scripts/corpus.json) pins complete commit SHAs for NewsFeedSite,
+Commons Lang 3.17.0 and Petclinic on Boot 3.4.2. Petclinic has separate Maven and
+Gradle cases; alternate build descriptors are removed only in the disposable
+copy, and each report records that projection. Source checkouts remain intact.
+Gradle wrapper digests come from [Gradle's published checksums](https://gradle.org/release-checksums/).
+Revision references: [Commons Lang](https://github.com/apache/commons-lang/commit/29ccc7665f3bc5d84155a3092ab2209a053324e6),
+[Petclinic](https://github.com/spring-projects/spring-petclinic/commit/1f89996e1ff53eb0d3990bbb68e382b118b1b556),
+[NewsFeedSite](https://github.com/Azure-Samples/NewsFeedSite/commit/76a406c34455c524ebe07d84768cd37400a5208c).
+
+```sh
+python3 scripts/fetch-corpus.py --dest /src/jupgrade/testrepos/pinned
+python3 scripts/test-corpus.py --manifest scripts/corpus.json \
+  --checkout-dir /src/jupgrade/testrepos/pinned --case petclinic-maven \
+  --warm-cache --verify --startup --timeout 1200
+
+# Reuse an existing local repository when network access is unavailable.
+python3 scripts/fetch-corpus.py --dest /src/jupgrade/testrepos/pinned \
+  --case news-feed --local-source news-feed=/src/jupgrade/testrepos/NewsFeedSite
+```
+
+The fetcher checks out the exact revision and refuses dirty or mismatched existing
+checkouts. The runner can also fetch with `--fetch`. `--warm-cache` evaluates the
+original build and resolves selected target parents/BOMs using pinned Maven Help
+Plugin 3.5.1 before planning. It needs network access unless artifacts are already
+cached. Source recipe artifacts still need preloading when explicit recipes are
+selected. Standalone Git metadata is copied for build plugins that inspect it.
+
+`--startup` requires `--verify`. Application cases must keep the launched process
+alive and return the expected HTTP status/body on localhost before startup is
+recorded as successful. Boot cases execute their packaged JAR directly; Gradle
+packaging runs `bootJar` first. Process groups are stopped before rollback. The
+runner checks input bytes and permissions after verification/startup and confirms
+original checkouts stayed unchanged, including failure paths. Application smoke
+checks do not establish full behavioral equivalence. Libraries report startup as
+not applicable. JSON explicitly records `build_verified` and `startup_verified`.
+
+[Real project corpus](.github/workflows/corpus.yml) provides manual CI runs with
+download, build, HTTP startup, convergence and rollback. These expanded external
+cases are pending their first network-enabled runs; the local NewsFeedSite build
+and recovery case passes, while local HTTP startup is prevented by socket limits.
+The scripts require Python 3.9+ and a Unix host for process-group cleanup.
