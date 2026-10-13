@@ -324,7 +324,8 @@ References: [Jetty 9.4.58 dependency versions](https://raw.githubusercontent.com
   and requires zero further edits. Gradle verification disables automatic toolchain
   downloads and reruns tasks.
 - Native Maven POM-only plans use schema 2; wrapper plans use schema 3. Captured
-  Maven models, Gradle, and source recipes use schema 4. All validate all transformations together, including
+  Maven models, Gradle, and source edits use schema 4; recipe creates/deletes use
+  schema 5. All validate all transformations together, including
   edits to owning properties and dependent modules. Regenerate old plans when the
   new ownership rules change their intended output.
 
@@ -407,10 +408,14 @@ Gradle plugin 7.41.0, with `rewrite-migrate-java:3.42.1` and
 Recipe planning executes repository build configuration on a temporary copy using
 the chosen JVM. Cache the pinned engine/recipe JARs and their dependencies first;
 `--offline` uses that cache. Two worker runs must converge before native build
-upgrades are merged. Failures, reported parser errors, unsupported paths, file
-creation/deletion/renaming, and nonconvergence produce no original repository edits.
-Currently recipes support changes to existing source/resource/build files only;
-some framework migrations will need broader file lifecycle support. Maven explicit
+upgrades are merged. Failures, reported parser errors, unsupported paths and
+nonconvergence produce no original repository edits. Recipes can edit, create,
+delete and rename supported source/resource/build files. Renames are recorded as
+creation/deletion pairs; destinations are written before sources are removed.
+Schema 5 records absent file states, created/deleted file permissions and new
+directories. Rollback restores exact bytes and permissions and removes only the
+recorded empty directories. Conflicting files, symlinks and changed context block
+before writes. Existing-file permission changes are rejected. Maven explicit
 version pins are checked against numeric downgrades and unresolved pin removal.
 Gradle source migrations need additional effective-model validation for such pins.
 
@@ -428,8 +433,8 @@ Java migration analysis. Native Maven toolchains, alternate compiler executables
 arbitrary compiler arguments, runtime images and CI upgrades still require review.
 Recipe and build success do not prove application startup or behavioral equivalence.
 
-Next priorities are full effective-model discovery for dynamic Gradle/Maven builds,
-recipe file creation/deletion, and a pinned corpus of real Boot applications with
+Next priorities are full effective-model discovery for dynamic Gradle/Maven builds
+and a pinned corpus of real Boot applications with
 application startup tests. Expand by project shape rather than clone count. Add
 batch reports, readable plan diffs and shell completion as the CLI grows.
 
@@ -565,9 +570,10 @@ dependencies. A successful default `go test ./...` skips these real builds; it
 does not substitute for a passing matrix. The workflow runs on pushes, pull
 requests and manual dispatch. The initial matrix results remain pending until the
 workflow executes on GitHub; local socket restrictions prevent that validation
-in this workspace.
+in this workspace. The matrix has since passed according to the repository owner.
 
-The remaining sequence is recipe file lifecycle support, effective build-model
+Recipe file lifecycle support is implemented and covered by recovery tests. The
+remaining sequence is effective build-model
 discovery, a pinned real-project corpus with startup checks, and CLI plan/batch
 improvements. Advance after the preceding step's required validation passes,
 with a separate formatted commit for each completed step.

@@ -55,7 +55,7 @@ func transformBuild(originals map[string][]byte, policy Policy, build string) (m
 	}
 	if policy.RecipeRun != nil {
 		for _, file := range policy.RecipeRun.Files {
-			if !bytes.Equal(originals[file.Path], results[file.Path]) {
+			if !sameFile(originals, results, file.Path) {
 				changes = append(changes, Change{file.Path, "replay pinned source recipe result"})
 			}
 		}
@@ -78,6 +78,9 @@ func validateModernPlan(p Plan) error {
 	}
 	if p.Policy.RecipeRun != nil && p.Policy.RecipeRun.Build != p.Build {
 		return fmt.Errorf("recipe receipt build does not match plan")
+	}
+	if p.Schema == 5 && p.Policy.RecipeRun == nil {
+		return fmt.Errorf("schema 5 requires a recipe receipt")
 	}
 	if p.Build != "maven" && p.Build != "gradle" {
 		return fmt.Errorf("schema 4 requires a Maven or Gradle build")
@@ -102,13 +105,15 @@ func validateModernPlan(p Plan) error {
 		if !editableBuildPath(file.Path, p.Build, p.Policy) && !(p.Policy.RecipeRun != nil && (sourceRecipePath(file.Path) || recipeBuildPath(file.Path))) {
 			return fmt.Errorf("unsupported planned file %s", file.Path)
 		}
-		if _, err := safePath(root, file.Path); err != nil {
+		if _, err := optionalPath(root, file.Path); err != nil {
 			return err
 		}
-		if hash([]byte(file.Before)) != file.BeforeSHA || hash([]byte(file.After)) != file.AfterSHA || p.Inputs[file.Path] != file.BeforeSHA {
-			return fmt.Errorf("content/hash mismatch: %s", file.Path)
+		if err := validateFileRecord(file, p.Inputs); err != nil {
+			return err
 		}
-		originals[file.Path] = []byte(file.Before)
+		if file.Action != "create" {
+			originals[file.Path] = []byte(file.Before)
+		}
 	}
 	for path, expected := range p.Inputs {
 		if seen[path] {
@@ -134,13 +139,14 @@ func validateModernPlan(p Plan) error {
 		return err
 	}
 	for _, file := range p.Files {
-		if !bytes.Equal(transformed[file.Path], []byte(file.After)) {
+		data, exists := transformed[file.Path]
+		if exists != (file.Action != "delete") || !bytes.Equal(data, []byte(file.After)) {
 			return fmt.Errorf("plan content does not match policy: %s", file.Path)
 		}
 	}
-	for path, data := range transformed {
-		if !seen[path] && !bytes.Equal(data, originals[path]) {
-			return fmt.Errorf("plan omits required changes to %s", path)
+	for _, file := range diffFiles(originals, transformed) {
+		if !seen[file.Path] {
+			return fmt.Errorf("plan omits required changes to %s", file.Path)
 		}
 	}
 	return nil

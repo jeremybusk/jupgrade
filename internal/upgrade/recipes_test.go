@@ -117,7 +117,7 @@ func TestRecipeWorkerRejectsFailureCreatesAndNonconvergence(t *testing.T) {
 	for name, body := range map[string]string{
 		"error":         "echo 'worker error'; exit 1",
 		"parse":         "echo 'Failed to parse App.java'; exit 0",
-		"create":        "touch new.java",
+		"unsupported":   "touch unexpected.sh",
 		"nonconvergent": "echo '// changes every run' >> src/main/java/App.java",
 	} {
 		t.Run(name, func(t *testing.T) {

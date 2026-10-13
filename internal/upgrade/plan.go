@@ -17,11 +17,14 @@ import (
 )
 
 type File struct {
-	Path      string `json:"path"`
-	BeforeSHA string `json:"before_sha256"`
-	AfterSHA  string `json:"after_sha256"`
-	Before    string `json:"before"`
-	After     string `json:"after"`
+	Path       string `json:"path"`
+	BeforeSHA  string `json:"before_sha256"`
+	AfterSHA   string `json:"after_sha256"`
+	Before     string `json:"before"`
+	After      string `json:"after"`
+	Action     string `json:"action,omitempty"`
+	BeforeMode uint32 `json:"before_mode,omitempty"`
+	AfterMode  uint32 `json:"after_mode,omitempty"`
 }
 
 type Plan struct {
@@ -292,6 +295,9 @@ func CreatePlan(root string, policy Policy) (Plan, error) {
 	if len(policy.MavenModels) > 0 || build == "gradle" || len(policy.Recipes) > 0 {
 		schema = 4
 	}
+	if recipeLifecycle(policy) {
+		schema = 5
+	}
 	if policy.Maven != "" && schema < 3 {
 		schema = 3
 	}
@@ -306,17 +312,17 @@ func CreatePlan(root string, policy Policy) (Plan, error) {
 	}
 	p.Changes = append(p.Changes, changes...)
 	p.Findings = append(p.Findings, findings...)
-	var paths []string
-	for path := range originals {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, relative := range paths {
-		before := originals[relative]
+	for relative, before := range originals {
 		p.Inputs[relative] = hash(before)
-		after := transformed[relative]
-		if !bytes.Equal(before, after) {
-			p.Files = append(p.Files, File{relative, hash(before), hash(after), string(before), string(after)})
+	}
+	p.Files = diffFiles(originals, transformed)
+	if policy.RecipeRun != nil {
+		for i := range p.Files {
+			for _, recorded := range policy.RecipeRun.Files {
+				if p.Files[i].Path == recorded.Path {
+					p.Files[i].BeforeMode, p.Files[i].AfterMode = recorded.BeforeMode, recorded.AfterMode
+				}
+			}
 		}
 	}
 	if err := scanFindings(&p); err != nil {
@@ -347,6 +353,15 @@ func scanFindings(p *Plan) error {
 		compiled[i] = regexp.MustCompile(risk.pattern)
 	}
 	runtimePin := regexp.MustCompile(`(?i)(java-version|jdk|openjdk|temurin|corretto|JAVA_HOME)[^\r\n]{0,60}\b(1\.8|8|11|17|21|25)\b`)
+	for _, file := range p.Files {
+		if file.Action == "create" && strings.HasSuffix(file.Path, ".java") {
+			for i, re := range compiled {
+				if re.MatchString(file.After) {
+					p.Findings = append(p.Findings, Finding{"warning", file.Path, sourceRisks[i].message})
+				}
+			}
+		}
+	}
 	return filepath.WalkDir(p.Root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -439,7 +454,10 @@ func (p Plan) Validate() error {
 	if p.Schema < 4 && (len(p.Policy.MavenModels) > 0 || len(p.Policy.Recipes) > 0 || p.Build == "gradle") {
 		return fmt.Errorf("captured models, source recipes and Gradle require schema 4")
 	}
-	if p.Schema == 4 {
+	if p.Schema < 5 && recipeLifecycle(p.Policy) {
+		return fmt.Errorf("recipe file lifecycle requires schema 5")
+	}
+	if p.Schema == 4 || p.Schema == 5 {
 		return validateModernPlan(p)
 	}
 	if p.Schema != 1 && p.Schema != 2 && p.Schema != 3 && p.Schema != 4 {

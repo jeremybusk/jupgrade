@@ -57,6 +57,42 @@ func TestTypeAwareRecipeMavenIntegration(t *testing.T) {
 	}
 }
 
+func TestRecipeLifecycleMavenIntegration(t *testing.T) {
+	if os.Getenv("JUPGRADE_LIFECYCLE_INTEGRATION") != "1" {
+		t.Skip("set JUPGRADE_LIFECYCLE_INTEGRATION=1 for lifecycle replay and real Maven compilation")
+	}
+	// The worker adapter isolates lifecycle mechanics from recipe applicability;
+	// verification still executes Maven and checks the newly created class.
+	originalPATH := os.Getenv("PATH")
+	p := lifecyclePlan(t)
+	writeTestFile(t, p.Root, "pom.xml", `<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>lifecycle</artifactId><version>1.0</version></project>`)
+	policy := p.Policy
+	policy.RecipeRun = nil
+	var log bytes.Buffer
+	opts := VerifyOptions{MavenRepo: os.Getenv("JUPGRADE_MAVEN_REPO"), JavaHome: os.Getenv("JUPGRADE_JAVA_HOME"), Offline: true, Timeout: 2 * time.Minute, Stdout: &log, Stderr: &log}
+	p, err := CreateRecipePlan(context.Background(), p.Root, policy, VerifyOptions{MavenRepo: fakeRecipeCache(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", originalPATH)
+	if err := Apply(p, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(context.Background(), p, opts); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	class, err := os.ReadFile(filepath.Join(p.Root, "target/classes/New.class"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(class) < 8 || binary.BigEndian.Uint16(class[6:8]) != 65 {
+		t.Fatal("created source did not compile for Java 21")
+	}
+	if err := Apply(p, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExternalJUnitBOMMavenIntegration(t *testing.T) {
 	if os.Getenv("JUPGRADE_INTEGRATION") != "1" {
 		t.Skip("set JUPGRADE_INTEGRATION=1 for external BOM build")

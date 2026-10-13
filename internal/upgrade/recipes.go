@@ -58,7 +58,7 @@ type RecipeArtifact struct {
 
 // RecipeRun contains the isolated worker's captured edits. Replaying a plan never
 // launches a build or needs worker artifacts; source edits stay constrained to
-// existing inventoried source/build/configuration paths.
+// recorded source/build/configuration paths, including absent file states.
 type RecipeRun struct {
 	Build        string            `json:"build"`
 	PolicySHA256 string            `json:"policy_sha256"`
@@ -68,6 +68,7 @@ type RecipeRun struct {
 	Artifacts    []RecipeArtifact  `json:"artifacts"`
 	CacheInputs  map[string]string `json:"cache_inputs"`
 	SHA256       string            `json:"sha256"`
+	CreatedDirs  []string          `json:"created_directories,omitempty"`
 }
 
 func recipePolicyHash(p Policy) string {
@@ -153,7 +154,7 @@ func validateRecipePolicy(p Policy) error {
 	}
 	buildFiles := map[string]bool{}
 	for _, path := range run.BuildFiles {
-		if buildFiles[path] || run.Inputs[path] == "" {
+		if buildFiles[path] {
 			return fmt.Errorf("invalid recorded recipe build input %s", path)
 		}
 		buildFiles[path] = true
@@ -167,8 +168,35 @@ func validateRecipePolicy(p Policy) error {
 		if !sourceRecipePath(file.Path) && !editableBuildPath(file.Path, "maven", p) && !editableBuildPath(file.Path, "gradle", p) && !recipeBuildPath(file.Path) {
 			return fmt.Errorf("unsupported source recipe output %s", file.Path)
 		}
-		if hash([]byte(file.Before)) != file.BeforeSHA || hash([]byte(file.After)) != file.AfterSHA || run.Inputs[file.Path] != file.BeforeSHA {
-			return fmt.Errorf("recipe result content/hash mismatch: %s", file.Path)
+		if err := validateFileRecord(file, run.Inputs); err != nil {
+			return err
+		}
+	}
+	for _, path := range run.BuildFiles {
+		found := run.Inputs[path] != ""
+		for _, file := range run.Files {
+			if file.Path == path {
+				found = file.Action != "delete"
+			}
+		}
+		if !found {
+			return fmt.Errorf("unrecorded recipe build input %s", path)
+		}
+	}
+	directories := map[string]bool{}
+	for _, directory := range run.CreatedDirs {
+		if directories[directory] || !validRelativePath(directory) {
+			return fmt.Errorf("invalid recipe directory %s", directory)
+		}
+		directories[directory] = true
+		found := false
+		for _, file := range run.Files {
+			if file.Action == "create" && strings.HasPrefix(file.Path, directory+string(filepath.Separator)) {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("recipe directory has no created file: %s", directory)
 		}
 	}
 	return nil
@@ -186,23 +214,46 @@ func replayRecipes(originals map[string][]byte, p Policy) (map[string][]byte, er
 	for _, file := range p.RecipeRun.Files {
 		outputs[file.Path] = file
 	}
-	if len(originals) != len(p.RecipeRun.Inputs) {
-		return nil, fmt.Errorf("source recipe input inventory changed; rerun recipe planning")
+	for path := range originals {
+		if _, ok := p.RecipeRun.Inputs[path]; !ok {
+			file, created := outputs[path]
+			if !created || file.Action != "create" {
+				return nil, fmt.Errorf("source recipe input inventory changed: %s", path)
+			}
+		}
 	}
 	for path, expected := range p.RecipeRun.Inputs {
 		data, ok := originals[path]
+		file, edited := outputs[path]
+		if !ok && edited && file.Action == "delete" {
+			delete(result, path)
+			continue
+		}
 		if !ok {
 			return nil, fmt.Errorf("source recipe input disappeared: %s", path)
 		}
 		actual := hash(data)
-		if file, edited := outputs[path]; edited {
+		if edited {
 			if actual != file.BeforeSHA && actual != file.AfterSHA {
 				return nil, fmt.Errorf("source recipe input changed: %s", path)
 			}
-			result[path] = []byte(file.After)
+			if file.Action == "delete" {
+				delete(result, path)
+			} else {
+				result[path] = []byte(file.After)
+			}
 		} else if actual != expected {
 			return nil, fmt.Errorf("source recipe context changed: %s", path)
 		}
+	}
+	for path, file := range outputs {
+		if file.Action != "create" {
+			continue
+		}
+		if data, exists := originals[path]; exists && hash(data) != file.AfterSHA {
+			return nil, fmt.Errorf("source recipe creation conflicts with %s", path)
+		}
+		result[path] = []byte(file.After)
 	}
 	return result, nil
 }

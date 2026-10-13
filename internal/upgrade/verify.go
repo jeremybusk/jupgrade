@@ -167,15 +167,18 @@ func checkApplied(p Plan) error {
 		expected[f.Path] = f.AfterSHA
 	}
 	for relative, h := range expected {
-		path, err := safePath(p.Root, relative)
+		file := File{Path: relative}
+		for _, changed := range p.Files {
+			if changed.Path == relative {
+				file = changed
+				break
+			}
+		}
+		actual, err := fileState(p.Root, file)
 		if err != nil {
 			return err
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if hash(data) != h {
+		if actual != h {
 			return fmt.Errorf("%s does not match the applied plan", relative)
 		}
 	}

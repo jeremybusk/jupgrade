@@ -130,7 +130,7 @@ func cacheEvidence(cache string) (map[string]string, error) {
 }
 
 // CreateRecipePlan runs pinned recipes on a copy and freezes the result into an
-// ordinary plan. Unsupported creates/deletes and nonconvergent recipes fail
+// ordinary plan. Unsupported paths and nonconvergent recipes fail
 // without changing the repository.
 func CreateRecipePlan(ctx context.Context, root string, policy Policy, options VerifyOptions) (Plan, error) {
 	if len(policy.Recipes) == 0 || policy.RecipeRun != nil {
@@ -243,13 +243,9 @@ func CreateRecipePlan(ctx context.Context, root string, policy Policy, options V
 	if err != nil {
 		return Plan{}, err
 	}
-	if len(first) != len(inputs) {
-		return Plan{}, fmt.Errorf("recipe created/deleted files; this worker currently supports edits to existing files only")
-	}
-	for path := range inputs {
-		if _, ok := first[path]; !ok {
-			return Plan{}, fmt.Errorf("recipe deleted/renamed %s; existing-file recipe support only", path)
-		}
+	firstModes, err := recipeModes(copyRoot, first)
+	if err != nil {
+		return Plan{}, err
 	}
 	if err := execute(); err != nil {
 		return Plan{}, err
@@ -262,8 +258,26 @@ func CreateRecipePlan(ctx context.Context, root string, policy Policy, options V
 		return Plan{}, fmt.Errorf("recipe changed file inventory on its convergence run")
 	}
 	for path, data := range first {
-		if !bytes.Equal(second[path], data) {
+		if other, exists := second[path]; !exists || !bytes.Equal(other, data) {
 			return Plan{}, fmt.Errorf("recipe did not converge: %s", path)
+		}
+	}
+	secondModes, err := recipeModes(copyRoot, second)
+	if err != nil {
+		return Plan{}, err
+	}
+	for path, mode := range firstModes {
+		if secondModes[path] != mode {
+			return Plan{}, fmt.Errorf("recipe permissions did not converge: %s", path)
+		}
+		if _, existing := inputs[path]; existing {
+			info, err := os.Stat(filepath.Join(root, path))
+			if err != nil {
+				return Plan{}, err
+			}
+			if info.Mode().Perm() != mode {
+				return Plan{}, fmt.Errorf("recipe changed existing file permissions: %s", path)
+			}
 		}
 	}
 	basePolicy := policy
@@ -288,17 +302,42 @@ func CreateRecipePlan(ctx context.Context, root string, policy Policy, options V
 		return Plan{}, err
 	}
 	run := &RecipeRun{Build: build, BuildFiles: sortedContentPaths(nativeInputs), PolicySHA256: recipePolicyHash(policy), Inputs: map[string]string{}, Files: []File{}, Artifacts: artifacts}
-	for _, path := range sortedContentPaths(inputs) {
-		before := inputs[path]
-		after := final[path]
+	for path, before := range inputs {
 		run.Inputs[path] = hash(before)
-		if !bytes.Equal(before, after) {
-			if !sourceRecipePath(path) && !editableBuildPath(path, build, policy) && !recipeBuildPath(path) {
-				return Plan{}, fmt.Errorf("recipe changed unsupported path %s", path)
+	}
+	run.Files = diffFiles(inputs, final)
+	directories := map[string]bool{}
+	for i := range run.Files {
+		file := &run.Files[i]
+		if !sourceRecipePath(file.Path) && !editableBuildPath(file.Path, build, policy) && !recipeBuildPath(file.Path) {
+			return Plan{}, fmt.Errorf("recipe changed unsupported path %s", file.Path)
+		}
+		if file.Action == "delete" {
+			info, err := os.Stat(filepath.Join(root, file.Path))
+			if err != nil {
+				return Plan{}, err
 			}
-			run.Files = append(run.Files, File{path, hash(before), hash(after), string(before), string(after)})
+			file.BeforeMode = uint32(info.Mode().Perm())
+		}
+		if file.Action == "create" {
+			info, err := os.Stat(filepath.Join(copyRoot, file.Path))
+			if err != nil {
+				return Plan{}, err
+			}
+			file.AfterMode = uint32(info.Mode().Perm())
+			for parent := filepath.Dir(file.Path); parent != "."; parent = filepath.Dir(parent) {
+				if _, err := os.Stat(filepath.Join(root, parent)); os.IsNotExist(err) {
+					directories[parent] = true
+				} else if err != nil {
+					return Plan{}, err
+				}
+			}
 		}
 	}
+	for directory := range directories {
+		run.CreatedDirs = append(run.CreatedDirs, directory)
+	}
+	sort.Strings(run.CreatedDirs)
 	run.CacheInputs, err = cacheEvidence(cache)
 	if err != nil {
 		return Plan{}, err
@@ -317,6 +356,18 @@ func CreateRecipePlan(ctx context.Context, root string, policy Policy, options V
 		}
 	}
 	return plan, nil
+}
+
+func recipeModes(root string, inputs map[string][]byte) (map[string]os.FileMode, error) {
+	modes := map[string]os.FileMode{}
+	for path := range inputs {
+		info, err := os.Stat(filepath.Join(root, path))
+		if err != nil {
+			return nil, err
+		}
+		modes[path] = info.Mode().Perm()
+	}
+	return modes, nil
 }
 
 func executeRecipes(ctx context.Context, root, scratch, build string, specs []RecipeSpec, options VerifyOptions, env []string, cache string) error {

@@ -64,6 +64,9 @@ func Apply(p Plan, rollback bool) error {
 		return err
 	}
 	defer unlock()
+	if recipeLifecycle(p.Policy) {
+		return applyLifecycle(p, rollback)
+	}
 	files := map[string]File{}
 	for _, f := range p.Files {
 		files[f.Path] = f
