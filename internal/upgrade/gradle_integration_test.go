@@ -52,6 +52,10 @@ func TestGradleBuildMatrixIntegration(t *testing.T) {
 				defer saveIntegrationLog(t, name, &log)
 				selected := policy
 				if wrapper {
+					// Generate infrastructure in a clean build: a target Gradle
+					// runtime may not evaluate the repository's legacy DSL yet.
+					wrapperRoot := t.TempDir()
+					writeTestFile(t, wrapperRoot, "settings.gradle", `rootProject.name = 'wrapper-generator'`)
 					executable := options.GradleCommand
 					if executable == "" {
 						executable = "gradle"
@@ -62,10 +66,31 @@ func TestGradleBuildMatrixIntegration(t *testing.T) {
 					}
 					ctx, cancel := context.WithTimeout(context.Background(), options.Timeout)
 					defer cancel()
-					command := exec.CommandContext(ctx, executable, "--no-daemon", "--console", "plain", "wrapper", "--gradle-version", policy.Gradle, "--distribution-type", "bin")
-					command.Dir, command.Env, command.Stdout, command.Stderr = root, env, &log, &log
+					args := []string{"--no-daemon", "--console", "plain", "wrapper", "--gradle-version", policy.Gradle, "--distribution-type", "bin"}
+					if options.Offline {
+						args = append(args, "--offline", "--no-validate-url")
+					}
+					command := exec.CommandContext(ctx, executable, args...)
+					command.Dir, command.Env, command.Stdout, command.Stderr = wrapperRoot, env, &log, &log
 					if err := command.Run(); err != nil {
 						t.Fatalf("generate real wrapper: %v\n%s", err, log.String())
+					}
+					for _, path := range []string{"gradlew", "gradlew.bat", "gradle/wrapper/gradle-wrapper.jar", gradleWrapperProperties} {
+						data, err := os.ReadFile(filepath.Join(wrapperRoot, path))
+						if err != nil {
+							t.Fatal(err)
+						}
+						info, err := os.Stat(filepath.Join(wrapperRoot, path))
+						if err != nil {
+							t.Fatal(err)
+						}
+						destination := filepath.Join(root, path)
+						if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(destination, data, info.Mode().Perm()); err != nil {
+							t.Fatal(err)
+						}
 					}
 					props := readTestFile(t, root, gradleWrapperProperties)
 					checksum, _, _, err := wrapperProperty([]byte(props), "distributionSha256Sum")

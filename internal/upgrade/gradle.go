@@ -255,8 +255,16 @@ func migrateGradleScript(data []byte, path string, policy Policy, properties map
 	jacoco := buildBlocks(tokens, pairs, "jacoco")
 	jacocoPlugin := false
 	jacocoPins := 0
+	braceDepth := 0
 	configurations := map[string]bool{"api": true, "implementation": true, "compileOnly": true, "runtimeOnly": true, "testImplementation": true, "testCompileOnly": true, "testRuntimeOnly": true, "annotationProcessor": true, "testAnnotationProcessor": true, "classpath": true, "platform": true, "enforcedPlatform": true, "compile": true, "testCompile": true}
 	for i, t := range tokens {
+		if t.kind == "symbol" {
+			if t.value == "{" {
+				braceDepth++
+			} else if t.value == "}" {
+				braceDepth--
+			}
+		}
 		if t.kind == "identifier" && (t.value == "apply" || t.value == "applyFrom") && !(insideBlocks(i, plugins) && i+1 < len(tokens) && tokens[i+1].value == "false") {
 			block("applied build scripts/plugins require Gradle model discovery")
 		}
@@ -413,6 +421,19 @@ func migrateGradleScript(data []byte, path string, policy Policy, properties map
 			scalar = i + 4
 		}
 		if t.value == "sourceCompatibility" || t.value == "targetCompatibility" {
+			if i > 0 && (tokens[i-1].value == "def" || tokens[i-1].value == "val" || tokens[i-1].value == "var") {
+				block("local Java compatibility variables require model-aware discovery")
+				continue
+			}
+			// Gradle 9 removed the Java convention properties exposed on
+			// Project. Java extension and JavaCompile task properties remain.
+			if compareVersions(policy.Gradle, "9.0") >= 0 && braceDepth == 0 && (i == 0 || tokens[i-1].value != ".") {
+				property := "java." + t.value
+				if i+1 < len(tokens) && tokens[i+1].value != "=" {
+					property += " ="
+				}
+				edits = append(edits, tokenEdit(t, property, "move removed Gradle project property "+t.value+" to the Java extension"))
+			}
 			j := i + 1
 			if j < len(tokens) && tokens[j].value == "=" {
 				j++

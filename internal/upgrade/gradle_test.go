@@ -5,9 +5,87 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestGradle9MigratesProjectCompatibilityProperties(t *testing.T) {
+	for _, java := range []int{17, 21, 25} {
+		for _, current := range []string{"VERSION_1_8", "VERSION_" + strconv.Itoa(java)} {
+			t.Run(strconv.Itoa(java)+"/"+current, func(t *testing.T) {
+				root := t.TempDir()
+				before := "plugins { id 'java' }\r\n// sourceCompatibility must move to the Java extension\r\nsourceCompatibility = JavaVersion." + current + "\r\ntargetCompatibility = JavaVersion." + current + "\r\n"
+				writeTestFile(t, root, "build.gradle", before)
+				policy, _ := PolicyForJava(java)
+				policy.Gradle = "9.1.0"
+				p := testPlan(t, root, policy)
+				if p.HasBlockers() {
+					t.Fatal(p.Findings)
+				}
+				if err := Apply(p, false); err != nil {
+					t.Fatal(err)
+				}
+				after := readTestFile(t, root, "build.gradle")
+				for _, property := range []string{"sourceCompatibility", "targetCompatibility"} {
+					if !strings.Contains(after, "\r\njava."+property+" = JavaVersion.VERSION_"+strconv.Itoa(java)+"\r\n") {
+						t.Fatal(after)
+					}
+				}
+				if !strings.Contains(after, "// sourceCompatibility must move to the Java extension\r\n") || strings.Contains(strings.ReplaceAll(after, "\r\n", ""), "\n") {
+					t.Fatal("lost comment or CRLF", after)
+				}
+				if next := testPlan(t, root, p.Policy); len(next.Files) != 0 || next.HasBlockers() {
+					t.Fatal("Gradle 9 migration did not converge", next.Findings)
+				}
+				if err := Apply(p, true); err != nil {
+					t.Fatal(err)
+				}
+				if readTestFile(t, root, "build.gradle") != before {
+					t.Fatal("rollback did not restore legacy project properties")
+				}
+			})
+		}
+	}
+}
+
+func TestGradle9PreservesJavaExtensionAndTaskPropertyScopes(t *testing.T) {
+	root := t.TempDir()
+	before := `plugins { id 'java' }
+java.sourceCompatibility = JavaVersion.VERSION_25
+java.targetCompatibility = JavaVersion.VERSION_25
+java { sourceCompatibility = JavaVersion.VERSION_25 }
+tasks.withType(JavaCompile).configureEach {
+    sourceCompatibility = '25'
+    targetCompatibility = '25'
+}`
+	writeTestFile(t, root, "build.gradle", before)
+	policy, _ := PolicyForJava(25)
+	p := testPlan(t, root, policy)
+	if len(p.Files) != 0 || p.HasBlockers() {
+		t.Fatal("changed supported extension/task properties", p.Files, p.Findings)
+	}
+}
+
+func TestGradle9MigratesLiteralPropertySetterNotation(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "build.gradle", "plugins { id 'java' }\nsourceCompatibility '1.8'\ntargetCompatibility 8\n")
+	policy, _ := PolicyForJava(25)
+	p := testPlan(t, root, policy)
+	if p.HasBlockers() {
+		t.Fatal(p.Findings)
+	}
+	if err := Apply(p, false); err != nil {
+		t.Fatal(err)
+	}
+	after := readTestFile(t, root, "build.gradle")
+	if !strings.Contains(after, "java.sourceCompatibility = '25'") || !strings.Contains(after, "java.targetCompatibility = 25") {
+		t.Fatal(after)
+	}
+	if next := testPlan(t, root, p.Policy); len(next.Files) != 0 || next.HasBlockers() {
+		t.Fatal("literal setter migration did not converge", next.Findings)
+	}
+}
 
 func TestGradleGroovyAndKotlinPlanApplyRollback(t *testing.T) {
 	for _, kotlin := range []bool{false, true} {

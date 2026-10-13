@@ -366,6 +366,12 @@ toolchains and source/target/release pins, literal dependency strings/map notati
 consumers agree; otherwise only the selected declaration receives a pin. Selected
 versionless dependencies require ownership evidence instead of a guessed override.
 
+For Gradle 9, top-level legacy `sourceCompatibility` and `targetCompatibility`
+declarations move to the Java extension (`java.sourceCompatibility` and
+`java.targetCompatibility`). Existing Java extension blocks and compile-task
+properties retain their scopes. Gradle removed the old project convention
+properties in 9.0; see the [Gradle migration guide](https://docs.gradle.org/current/userguide/upgrading_version_8.html).
+
 Saved defaults are Gradle 8.14.3 for Java 17/21 and 9.1.0 for Java 25. Existing
 standard HTTPS `gradle-X-bin.zip`/`all.zip` wrapper URLs are upgraded while preserving
 mirrors, archive type and checksums. A changed checksummed distribution needs
@@ -538,6 +544,10 @@ fixtures with an installed Gradle and an actual generated wrapper. Tests require
 identical plans, successful JUnit execution, the requested bytecode major,
 convergence, reapply and exact rollback, including the wrapper upgrade. Build logs
 are kept as workflow artifacts. A failing matrix entry fails validation.
+
+Wrapper generation runs in a separate minimal build and copies the generated
+infrastructure into the unchanged fixture. This lets the target Gradle generate
+its wrapper before jupgrade migrates syntax that the target runtime has removed.
 
 To run one matrix entry locally with the matching JDK and Gradle installed:
 
