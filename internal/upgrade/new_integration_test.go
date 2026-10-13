@@ -94,36 +94,6 @@ func TestExternalJUnitBOMMavenIntegration(t *testing.T) {
 	}
 }
 
-func TestGradleJava21BuildIntegration(t *testing.T) {
-	if os.Getenv("JUPGRADE_GRADLE_INTEGRATION") != "1" {
-		t.Skip("set JUPGRADE_GRADLE_INTEGRATION=1 for cached Gradle")
-	}
-	root := t.TempDir()
-	writeTestFile(t, root, "build.gradle.kts", `plugins { java }
-java { sourceCompatibility = JavaVersion.VERSION_1_8; targetCompatibility = JavaVersion.VERSION_1_8 }`)
-	writeTestFile(t, root, "settings.gradle.kts", `rootProject.name = "gradle-integration"`)
-	writeTestFile(t, root, "src/main/java/example/Greeting.java", `package example; public class Greeting { public static String hello() { return "hello"; } }`)
-	p := testPlan(t, root, DefaultPolicy())
-	if err := Apply(p, false); err != nil {
-		t.Fatal(err)
-	}
-	var log bytes.Buffer
-	opts := VerifyOptions{GradleCommand: os.Getenv("JUPGRADE_GRADLE_COMMAND"), GradleUserHome: os.Getenv("JUPGRADE_GRADLE_USER_HOME"), Offline: true, Timeout: 2 * time.Minute, Stdout: &log, Stderr: &log}
-	if err := Verify(context.Background(), p, opts); err != nil {
-		t.Fatalf("%v\n%s", err, log.String())
-	}
-	class, err := os.ReadFile(filepath.Join(root, "build/classes/java/main/example/Greeting.class"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(class) < 8 || binary.BigEndian.Uint16(class[6:8]) != 65 {
-		t.Fatal("Gradle did not emit Java 21")
-	}
-	if err := Apply(p, true); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestBootMajorSourceAndContextMavenIntegration(t *testing.T) {
 	if os.Getenv("JUPGRADE_BOOT_SOURCE_INTEGRATION") != "1" {
 		t.Skip("set JUPGRADE_BOOT_SOURCE_INTEGRATION=1 for cached Boot/OpenRewrite migration")

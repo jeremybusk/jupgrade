@@ -506,7 +506,7 @@ JUPGRADE_SOURCE_INTEGRATION=1 \
 JUPGRADE_BOOT_SOURCE_INTEGRATION=1 \
   go test -v ./internal/upgrade -run TestBootMajorSourceAndContextMavenIntegration -count=1
 JUPGRADE_GRADLE_INTEGRATION=1 JUPGRADE_GRADLE_COMMAND=/path/to/gradle \
-  go test -v ./internal/upgrade -run TestGradleJava21BuildIntegration -count=1
+  go test -v ./internal/upgrade -run TestGradleBuildMatrixIntegration -count=1
 ```
 
 Gradle needs local socket access even without a long-lived daemon. Environments
@@ -528,3 +528,36 @@ python3 scripts/test-corpus.py testdata/boot-context --preset build \
 Set the artifact-cache/JDK environment variables above as needed. The runner
 replans with the captured policy, so source replay and model resolution do not rely
 on changing external state. Originals are never modified.
+
+## Gradle validation matrix
+
+[Validate](.github/workflows/validate.yml) runs Go race tests and vet, followed by
+independent real Gradle builds on Temurin Java 17, 21 and 25. Java 17/21 use Gradle
+8.14.3; Java 25 uses 9.1.0. Each job exercises both Groovy and Kotlin/catalog
+fixtures with an installed Gradle and an actual generated wrapper. Tests require
+identical plans, successful JUnit execution, the requested bytecode major,
+convergence, reapply and exact rollback, including the wrapper upgrade. Build logs
+are kept as workflow artifacts. A failing matrix entry fails validation.
+
+To run one matrix entry locally with the matching JDK and Gradle installed:
+
+```sh
+JUPGRADE_GRADLE_INTEGRATION=1 JUPGRADE_TEST_JAVA=21 \
+  JUPGRADE_JAVA_HOME=/path/to/jdk-21 \
+  JUPGRADE_GRADLE_COMMAND=/path/to/gradle-8.14.3/bin/gradle \
+  JUPGRADE_TEST_REPORTS=/tmp/jupgrade-gradle-reports \
+  go test -v -count=1 -timeout=20m ./internal/upgrade \
+    -run '^TestGradleBuildMatrixIntegration$'
+```
+
+Use `JUPGRADE_OFFLINE=1` only after caching the distribution and all fixture
+dependencies. A successful default `go test ./...` skips these real builds; it
+does not substitute for a passing matrix. The workflow runs on pushes, pull
+requests and manual dispatch. The initial matrix results remain pending until the
+workflow executes on GitHub; local socket restrictions prevent that validation
+in this workspace.
+
+The remaining sequence is recipe file lifecycle support, effective build-model
+discovery, a pinned real-project corpus with startup checks, and CLI plan/batch
+improvements. Advance after the preceding step's required validation passes,
+with a separate formatted commit for each completed step.

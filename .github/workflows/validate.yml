@@ -1,0 +1,70 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -race ./...
+      - run: go vet ./...
+
+  gradle:
+    name: Gradle on Java ${{ matrix.java }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - java: '17'
+            gradle: '8.14.3'
+          - java: '21'
+            gradle: '8.14.3'
+          - java: '25'
+            gradle: '9.1.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ matrix.gradle }}
+          build-scan-publish: false
+          dependency-graph: disabled
+      - name: Build, test, converge, and roll back both DSLs and real wrappers
+        env:
+          JUPGRADE_GRADLE_INTEGRATION: '1'
+          JUPGRADE_TEST_JAVA: ${{ matrix.java }}
+          JUPGRADE_TEST_REPORTS: ${{ github.workspace }}/reports
+        run: go test -v -count=1 -timeout=20m ./internal/upgrade -run '^TestGradleBuildMatrixIntegration$'
+      - name: Keep build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-java-${{ matrix.java }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 14
