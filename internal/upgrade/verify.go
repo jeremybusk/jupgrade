@@ -14,6 +14,7 @@ import (
 )
 
 type VerifyOptions struct {
+	Build          string
 	GradleCommand  string
 	GradleUserHome string
 	JavaHome       string

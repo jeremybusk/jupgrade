@@ -63,7 +63,7 @@ def exercise(binary, source, args, case=None):
             def command(*parts, allow_blockers=False, replay=False):
                 env = os.environ.copy()
                 if replay:
-                    for key in ("JAVA", "PRESET", "POLICY", "DEPENDENCIES", "PLUGINS", "PARENTS", "SPRING_BOOT", "MAVEN", "MAVEN_SHA256", "GRADLE", "GRADLE_SHA256", "GRADLE_PLUGINS", "RECIPES", "RESOLVE_MAVEN"):
+                    for key in ("BUILD", "JAVA", "PRESET", "POLICY", "DEPENDENCIES", "PLUGINS", "PARENTS", "SPRING_BOOT", "MAVEN", "MAVEN_SHA256", "GRADLE", "GRADLE_SHA256", "GRADLE_PLUGINS", "RECIPES", "RESOLVE_MAVEN"):
                         env.pop("JUPGRADE_" + key, None)
                 result = subprocess.run(
                     [str(binary), *map(str, parts)], capture_output=True, text=True,
@@ -99,7 +99,11 @@ def exercise(binary, source, args, case=None):
                 return content, blockers
 
             if args.warm_cache:
-                command("discover", "--repo", repo, "--out", work / "effective-model.json", "--timeout", f"{args.timeout}s")
+                build_options=[]
+                for i in range(0,len(extra),2):
+                    if extra[i]=="--build":
+                        build_options=["--build",extra[i+1]]
+                command("discover", "--repo", repo, "--out", work / "effective-model.json", "--timeout", f"{args.timeout}s", *build_options)
                 if args.resolve_maven:
                     pins = json.loads(command("policy", "--java", args.java, "--preset", args.preset, *extra).stdout)
                     targets = dict(pins.get("parents") or {})

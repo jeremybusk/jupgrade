@@ -13,7 +13,7 @@ from urllib.error import URLError, HTTPError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
-PLAN_FLAGS = {"--dependency", "--plugin", "--parent", "--spring-boot", "--gradle", "--gradle-sha256", "--maven", "--maven-sha256", "--recipe"}
+PLAN_FLAGS = {"--build", "--dependency", "--plugin", "--parent", "--spring-boot", "--gradle", "--gradle-sha256", "--maven", "--maven-sha256", "--recipe"}
 
 
 def relative_path(value, allow_root=False):

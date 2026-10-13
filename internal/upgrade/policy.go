@@ -11,6 +11,7 @@ import (
 
 // Policy is a reviewed set of target versions, not a request for "latest".
 type Policy struct {
+	Build         string                `json:"build,omitempty"`
 	Recipes       []string              `json:"recipes,omitempty"`
 	RecipeRun     *RecipeRun            `json:"recipe_run,omitempty"`
 	Gradle        string                `json:"gradle,omitempty"`
@@ -149,6 +150,9 @@ var exactVersion = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)*(?:[.-][A-Za-z0-9]+)*
 var wildcardVersion = regexp.MustCompile(`(?:^|[.-])[xX](?:$|[.-])`)
 
 func (p Policy) Validate() error {
+	if p.Build != "" && p.Build != "auto" && p.Build != "maven" && p.Build != "gradle" {
+		return fmt.Errorf("build must be maven, gradle or auto")
+	}
 	if err := validateRecipePolicy(p); err != nil {
 		return err
 	}

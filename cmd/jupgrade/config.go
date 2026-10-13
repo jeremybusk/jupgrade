@@ -26,12 +26,13 @@ func (v *versionRules) String() string         { return strings.Join(*v, ",") }
 func (v *versionRules) Set(value string) error { *v = append(*v, value); return nil }
 
 type policyFlags struct {
-	path, java, preset, boot, maven, mavenSHA, gradle, gradleSHA *string
-	dependencies, plugins, parents, gradlePlugins, recipes       versionRules
+	path, java, preset, boot, maven, mavenSHA, gradle, gradleSHA, build *string
+	dependencies, plugins, parents, gradlePlugins, recipes              versionRules
 }
 
 func bindPolicy(flags *flag.FlagSet) *policyFlags {
 	p := &policyFlags{}
+	p.build = flags.String("build", envDefault("JUPGRADE_BUILD", ""), "select maven or gradle; default auto (JUPGRADE_BUILD)")
 	p.path = flags.String("policy", envDefault("JUPGRADE_POLICY", ""), "complete JSON policy (JUPGRADE_POLICY)")
 	p.java = flags.String("java", envDefault("JUPGRADE_JAVA", ""), "target Java: 17, 21 or 25; default 21 (JUPGRADE_JAVA)")
 	p.preset = flags.String("preset", envDefault("JUPGRADE_PRESET", "build"), "pinned preset: build or common (JUPGRADE_PRESET)")
@@ -84,6 +85,12 @@ func (f *policyFlags) resolve() (upgrade.Policy, error) {
 		p = defaults
 	} else {
 		p.Java = java
+	}
+	if *f.build != "" {
+		p.Build = *f.build
+		if p.Build == "auto" {
+			p.Build = ""
+		}
 	}
 	if *f.maven != "" {
 		if p.Maven != *f.maven {

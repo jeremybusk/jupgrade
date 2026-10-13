@@ -54,7 +54,10 @@ func ResolveMaven(root string, policy Policy, cache string) (Policy, error) {
 	if err != nil {
 		return policy, err
 	}
-	if err := requireMaven(root); err != nil {
+	if build, err := detectBuild(root, policy.Build); err != nil || build != "maven" {
+		if err == nil {
+			err = fmt.Errorf("Maven resolution requires a Maven build")
+		}
 		return policy, err
 	}
 	contents, err := readRepositoryPOMs(root)

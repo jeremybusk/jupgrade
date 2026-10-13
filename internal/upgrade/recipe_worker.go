@@ -143,7 +143,7 @@ func CreateRecipePlan(ctx context.Context, root string, policy Policy, options V
 	if err != nil {
 		return Plan{}, err
 	}
-	build, err := detectBuild(root)
+	build, err := detectBuild(root, policy.Build)
 	if err != nil {
 		return Plan{}, err
 	}

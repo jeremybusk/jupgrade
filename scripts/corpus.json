@@ -32,8 +32,7 @@
       "java": 21,
       "preset": "build",
       "resolve_maven": true,
-      "exclude": ["build.gradle", "settings.gradle", "gradlew", "gradlew.bat", "gradle"],
-      "plan_args": ["--spring-boot", "3.5.16"],
+      "plan_args": ["--build", "maven", "--spring-boot", "3.5.16"],
       "startup": {
         "command": ["java", "-jar", "{artifact}", "--server.port={port}"],
         "artifact": "target/*.jar",
@@ -49,8 +48,7 @@
       "root": ".",
       "java": 21,
       "preset": "build",
-      "exclude": ["pom.xml", "mvnw", "mvnw.cmd", ".mvn"],
-      "plan_args": ["--spring-boot", "3.5.16", "--gradle", "8.14.3"],
+      "plan_args": ["--build", "gradle", "--spring-boot", "3.5.16", "--gradle", "8.14.3"],
       "gradle_checksums": {
         "bin": "bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
         "all": "ed1a8d686605fd7c23bdf62c7fc7add1c5b23b2bbc3721e661934ef4a4911d7c"

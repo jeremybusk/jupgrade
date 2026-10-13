@@ -186,7 +186,7 @@ func DiscoverBuildModel(ctx context.Context, root string, options VerifyOptions)
 	if err != nil {
 		return BuildModel{}, err
 	}
-	build, err := detectBuild(root)
+	build, err := detectBuild(root, options.Build)
 	if err != nil {
 		return BuildModel{}, err
 	}

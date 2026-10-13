@@ -284,7 +284,7 @@ func CreatePlan(root string, policy Policy) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	build, err := detectBuild(root)
+	build, err := detectBuild(root, policy.Build)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -418,20 +418,28 @@ func WritePlan(path string, p Plan) error {
 }
 
 func writeNewFile(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	f, err := os.CreateTemp(filepath.Dir(path), ".jupgrade-write-*")
 	if err != nil {
 		return err
 	}
-	_, writeErr := f.Write(data)
-	closeErr := f.Close()
-	if writeErr != nil {
-		_ = os.Remove(path)
-		return writeErr
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if err := f.Chmod(0600); err != nil {
+		return err
 	}
-	return closeErr
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Link(f.Name(), path)
 }
 
-func ReadPlan(path string) (Plan, error) {
+func readPlanData(path string) (Plan, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return Plan{}, err
@@ -446,6 +454,14 @@ func ReadPlan(path string) (Plan, error) {
 	var extra any
 	if err := d.Decode(&extra); err != io.EOF {
 		return p, fmt.Errorf("plan must contain one JSON object")
+	}
+	return p, nil
+}
+
+func ReadPlan(path string) (Plan, error) {
+	p, err := readPlanData(path)
+	if err != nil {
+		return p, err
 	}
 	return p, p.Validate()
 }

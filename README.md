@@ -62,6 +62,7 @@ policy, so later environment changes do not affect apply, verify, or rollback.
 | CLI option | Environment variable |
 | --- | --- |
 | `--repo` | `JUPGRADE_REPO` |
+| `--build` | `JUPGRADE_BUILD` (`auto`, `maven`, `gradle`) |
 | `--java` | `JUPGRADE_JAVA` |
 | `--preset` | `JUPGRADE_PRESET` |
 | `--policy` | `JUPGRADE_POLICY` |
@@ -81,6 +82,7 @@ policy, so later environment changes do not affect apply, verify, or rollback.
 | `--maven-repo` | `JUPGRADE_MAVEN_REPO` |
 | `--maven-settings` | `JUPGRADE_MAVEN_SETTINGS` |
 | `inspect --model` | `JUPGRADE_MODEL` |
+| `batch --manifest` | `JUPGRADE_BATCH_MANIFEST` |
 | `--profiles` | `JUPGRADE_PROFILES` |
 | `--offline` | `JUPGRADE_OFFLINE` (`1`/`0` or `true`/`false`) |
 | `--timeout` | `JUPGRADE_TIMEOUT` (for example `20m`) |
@@ -419,7 +421,8 @@ Gradle version and exact runtime Java major.
 Dynamic includes, composite builds, custom project directories, applied scripts,
 rich catalog versions, multiline/escaped build strings and unresolved target
 expressions block. Kotlin DSL support does not include Kotlin-language/compiler
-migration. Mixed Maven/Gradle roots require selecting one build root. Boot/Gradle
+migration. Mixed Maven/Gradle roots require `--build maven` or `--build gradle`;
+auto mode refuses to guess. The saved policy retains the selection. Boot/Gradle
 compatibility is checked; Boot 3 with the Java 25/Gradle 9 defaults blocks.
 
 ## Pinned source recipes
@@ -469,10 +472,11 @@ Java migration analysis. Native Maven toolchains, alternate compiler executables
 arbitrary compiler arguments, runtime images and CI upgrades still require review.
 Recipe and build success do not prove application startup or behavioral equivalence.
 
-Next priorities are full effective-model discovery for dynamic Gradle/Maven builds
-and a pinned corpus of real Boot applications with
-application startup tests. Expand by project shape rather than clone count. Add
-batch reports, readable plan diffs and shell completion as the CLI grows.
+Effective-model discovery, lifecycle recovery, pinned corpus tooling, readable
+diffs, batch reports and shell completion are implemented. Remaining work is
+model-driven editing of opaque declarations and the first network-enabled runs
+of the expanded real-project corpus. Expand by project shape rather than clone
+count, and keep application-specific startup and behavioral tests.
 
 References: [Gradle compatibility](https://docs.gradle.org/current/userguide/compatibility.html),
 [Boot 3.5 requirements](https://docs.spring.io/spring-boot/3.5/system-requirements.html),
@@ -604,22 +608,17 @@ JUPGRADE_GRADLE_INTEGRATION=1 JUPGRADE_TEST_JAVA=21 \
 Use `JUPGRADE_OFFLINE=1` only after caching the distribution and all fixture
 dependencies. A successful default `go test ./...` skips these real builds; it
 does not substitute for a passing matrix. The workflow runs on pushes, pull
-requests and manual dispatch. The initial matrix results remain pending until the
-workflow executes on GitHub; local socket restrictions prevent that validation
-in this workspace. The matrix has since passed according to the repository owner.
-
-Recipe file lifecycle support is implemented and covered by recovery tests. The
-remaining sequence is effective build-model
-discovery, a pinned real-project corpus with startup checks, and CLI plan/batch
-improvements. Advance after the preceding step's required validation passes,
-with a separate formatted commit for each completed step.
+requests and manual dispatch. The initial matrix passed according to the repository
+owner; the added effective-model tests still need a new CI run. Local socket
+restrictions prevent real Gradle execution in this workspace.
 
 ## Pinned real-project corpus
 
 [corpus.json](scripts/corpus.json) pins complete commit SHAs for NewsFeedSite,
 Commons Lang 3.17.0 and Petclinic on Boot 3.4.2. Petclinic has separate Maven and
-Gradle cases; alternate build descriptors are removed only in the disposable
-copy, and each report records that projection. Source checkouts remain intact.
+Gradle cases selected using `--build`. Both descriptors remain intact in the
+disposable copy and the source checkout. Manifests can explicitly project other
+build shapes with `exclude`; reports record any such projection.
 Gradle wrapper digests come from [Gradle's published checksums](https://gradle.org/release-checksums/).
 Revision references: [Commons Lang](https://github.com/apache/commons-lang/commit/29ccc7665f3bc5d84155a3092ab2209a053324e6),
 [Petclinic](https://github.com/spring-projects/spring-petclinic/commit/1f89996e1ff53eb0d3990bbb68e382b118b1b556),
@@ -657,3 +656,61 @@ download, build, HTTP startup, convergence and rollback. These expanded external
 cases are pending their first network-enabled runs; the local NewsFeedSite build
 and recovery case passes, while local HTTP startup is prevented by socket limits.
 The scripts require Python 3.9+ and a Unix host for process-group cleanup.
+
+## Plan review, batch upgrades and completion
+
+```sh
+bin/jupgrade diff --plan /tmp/service-plan.json
+bin/jupgrade diff --plan /tmp/service-plan.json --format summary
+
+bin/jupgrade batch --manifest /path/to/repositories.json \
+  --out /tmp/modernization-batch --java 21 --preset common --dry-run
+# Review each saved plan, then apply/verify using the captured policy.
+bin/jupgrade batch --manifest /path/to/repositories.json \
+  --out /tmp/modernization-batch --resume
+
+# Once jupgrade is on PATH, enable completion for the current shell.
+source <(jupgrade completion bash)
+# Also available: jupgrade completion zsh / fish
+```
+
+Diffs use standard Git-compatible unified patches with context, create/delete
+metadata and missing-newline markers. `--format summary` lists operations;
+`--format json` prints the captured plan. Review validates saved hashes without
+requiring the original checkout to still exist. Apply and verify retain live
+inventory validation. Large generated files use a bounded-memory replacement
+diff. Core rollback preserves exact Unix permissions; Git patches express Git's
+regular/executable file modes.
+
+A batch manifest uses schema 1:
+
+```json
+{
+  "schema": 1,
+  "repositories": [
+    {"name": "orders", "repo": "../orders"},
+    {"name": "billing", "repo": "../billing"}
+  ]
+}
+```
+
+Relative paths are resolved against the manifest file. Names and canonical roots
+must be unique. A new output directory stores `report.json`, per-repository
+recovery plans and logs. Place it outside all inputs or under `.jupgrade`.
+Batch uses the same policy/env/CLI defaults as upgrade; normal execution plans,
+applies and verifies each repository. Dry run saves plans without applying.
+Recipe planning still runs its isolated workers when explicitly selected.
+
+Resume retains the original policy and Maven-resolution setting, including for
+unplanned repositories. It reuses saved recovery plans and refuses stale inputs.
+Previously verified repositories avoid redundant builds when their verification
+configuration is unchanged; changing JVM/cache/settings/profile options triggers
+verification again. Failed builds keep their applied edits and recovery plans.
+Other repositories continue and reports identify the failing stage. Roll back a
+repository with its saved plan, or use a new batch directory/policy to resolve
+blockers. Cross-repository upgrades are not one filesystem transaction.
+
+Completion for Bash, Zsh and Fish uses the same flag registry as command parsing.
+Bash completion handles target/recipe values and repository paths containing
+spaces. `jupgrade help COMMAND` shows the complete options for any command. The
+CLI still uses the Go standard library; these commands do not add dependencies.

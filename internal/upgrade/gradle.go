@@ -12,10 +12,19 @@ import (
 
 const gradleWrapperProperties = "gradle/wrapper/gradle-wrapper.properties"
 
-func detectBuild(root string) (string, error) {
+func detectBuild(root string, preference ...string) (string, error) {
 	has := func(name string) bool { _, err := os.Lstat(filepath.Join(root, name)); return err == nil }
 	maven := has("pom.xml")
 	gradle := has("build.gradle") || has("build.gradle.kts") || has("settings.gradle") || has("settings.gradle.kts")
+	if len(preference) > 0 && preference[0] != "" && preference[0] != "auto" {
+		if preference[0] == "maven" && maven {
+			return "maven", nil
+		}
+		if preference[0] == "gradle" && gradle {
+			return "gradle", nil
+		}
+		return "", fmt.Errorf("requested build %s is unavailable at %s", preference[0], root)
+	}
 	if maven && gradle {
 		return "", fmt.Errorf("mixed Maven/Gradle root; select one build root")
 	}

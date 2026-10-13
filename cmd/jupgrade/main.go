@@ -53,13 +53,96 @@ func run(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: jupgrade <inspect|resolve|recipes|plan|upgrade|apply|verify|rollback|policy> [options]")
 	}
-	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	command, err := configureCommand(args[0])
+	if err != nil {
+		return err
+	}
+	flags := command.flags
 	switch args[0] {
+	case "diff":
+		if err := parseFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		if *command.plan == "" {
+			return errors.New("provide --plan PATH")
+		}
+		p, err := upgrade.ReadPlanForReview(*command.plan)
+		if err != nil {
+			return err
+		}
+		switch *command.format {
+		case "unified":
+			return upgrade.WritePlanDiff(os.Stdout, p)
+		case "json":
+			return printJSON(p)
+		case "summary":
+			fmt.Printf("%s: Java %d, %d files\n", p.Root, p.Policy.Java, len(p.Files))
+			for _, file := range p.Files {
+				action := file.Action
+				if action == "" {
+					action = "edit"
+				}
+				fmt.Printf("  %s %s\n", action, file.Path)
+			}
+			return nil
+		default:
+			return errors.New("diff --format must be unified, summary or json")
+		}
+	case "batch":
+		if err := parseFlags(flags, args[1:]); err != nil {
+			return err
+		}
+		if *command.manifest == "" || *command.out == "" {
+			return errors.New("batch requires --manifest FILE --out NEW_DIRECTORY")
+		}
+		manifest, err := upgrade.ReadBatchManifest(*command.manifest)
+		if err != nil {
+			return err
+		}
+		options, err := command.verify.options(flags, *command.offline)
+		if err != nil {
+			return err
+		}
+		var policy upgrade.Policy
+		resolve := false
+		if !*command.resume {
+			policy, err = command.policy.resolve()
+			if err != nil {
+				return err
+			}
+			resolve, err = environmentBool(flags, "resolve-maven", "JUPGRADE_RESOLVE_MAVEN", *command.resolve)
+			if err != nil {
+				return err
+			}
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		report, workErr := upgrade.RunBatch(ctx, manifest, *command.out, upgrade.BatchOptions{Policy: policy, Verify: options, DryRun: *command.dryRun, Resume: *command.resume, ResolveMaven: resolve})
+		if report.Schema != 0 {
+			if err := printJSON(report); err != nil {
+				return err
+			}
+		}
+		return workErr
+	case "completion":
+		if len(args) != 2 {
+			return errors.New("usage: jupgrade completion <bash|zsh|fish>")
+		}
+		if args[1] == "--help" || args[1] == "-h" {
+			fmt.Println("jupgrade completion <bash|zsh|fish>")
+			return nil
+		}
+		script, err := completionScript(args[1])
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprint(os.Stdout, script)
+		return err
 	case "discover":
-		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root")
-		output := flags.String("out", envDefault("JUPGRADE_OUT", ""), "new model snapshot; omit to print JSON")
-		vf := bindVerify(flags)
-		offline := bindOffline(flags)
+		repo := command.repo
+		output := command.out
+		vf := command.verify
+		offline := command.offline
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
 		}
@@ -69,6 +152,7 @@ func run(args []string) error {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		options.Build = *command.build
 		model, err := upgrade.DiscoverBuildModel(ctx, *repo, options)
 		if err != nil {
 			return err
@@ -78,11 +162,11 @@ func run(args []string) error {
 		}
 		return upgrade.WriteBuildModel(*output, model)
 	case "inspect":
-		modelPath := flags.String("model", envDefault("JUPGRADE_MODEL", ""), "saved effective build model")
-		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root (JUPGRADE_REPO)")
-		cache := flags.String("maven-repo", envDefault("JUPGRADE_MAVEN_REPO", ""), "cached parent/BOM repository")
-		resolve := flags.Bool("resolve-maven", false, "capture cached Maven models for inspection (JUPGRADE_RESOLVE_MAVEN)")
-		config := bindPolicy(flags)
+		modelPath := command.model
+		repo := command.repo
+		cache := command.cache
+		resolve := command.resolve
+		config := command.policy
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
 		}
@@ -122,10 +206,10 @@ func run(args []string) error {
 		}
 		return printJSON(upgrade.RecipeCatalog())
 	case "resolve":
-		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "Maven repository root (JUPGRADE_REPO)")
-		cache := flags.String("maven-repo", envDefault("JUPGRADE_MAVEN_REPO", ""), "cached parent/BOM repository (JUPGRADE_MAVEN_REPO)")
-		output := flags.String("out", envDefault("JUPGRADE_OUT", ""), "new resolved policy file; omit to print JSON")
-		config := bindPolicy(flags)
+		repo := command.repo
+		cache := command.cache
+		output := command.out
+		config := command.policy
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
 		}
@@ -142,7 +226,7 @@ func run(args []string) error {
 		}
 		return upgrade.WritePolicy(*output, p)
 	case "policy":
-		config := bindPolicy(flags)
+		config := command.policy
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
 		}
@@ -152,19 +236,19 @@ func run(args []string) error {
 		}
 		return printJSON(p)
 	case "plan", "upgrade":
-		repo := flags.String("repo", envDefault("JUPGRADE_REPO", "."), "repository root (JUPGRADE_REPO)")
-		config := bindPolicy(flags)
-		output := flags.String("out", envDefault("JUPGRADE_OUT", ""), "new plan file; plan prints JSON if omitted (JUPGRADE_OUT)")
-		resolve := flags.Bool("resolve-maven", false, "capture cached parent/BOM POMs in the plan (JUPGRADE_RESOLVE_MAVEN)")
-		vf := bindVerify(flags)
-		offline := bindOffline(flags)
+		repo := command.repo
+		config := command.policy
+		output := command.out
+		resolve := command.resolve
+		vf := command.verify
+		offline := command.offline
 		modelCache := vf.repo
 		dryRun := false
-		if args[0] == "upgrade" {
-			flags.BoolVar(&dryRun, "dry-run", false, "save/print the plan without applying or building")
-		}
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
+		}
+		if args[0] == "upgrade" {
+			dryRun = *command.dryRun
 		}
 		if args[0] == "upgrade" && !dryRun && *output == "" {
 			return errors.New("upgrade requires --out PATH to save a recoverable plan; use --dry-run to preview")
@@ -217,12 +301,12 @@ func run(args []string) error {
 		}
 		return nil
 	case "apply", "rollback", "verify":
-		path := flags.String("plan", envDefault("JUPGRADE_PLAN", ""), "saved migration plan (JUPGRADE_PLAN)")
+		path := command.plan
 		var vf verifyFlags
 		var offline *bool
 		if args[0] == "verify" {
-			vf = bindVerify(flags)
-			offline = bindOffline(flags)
+			vf = command.verify
+			offline = command.offline
 		}
 		if err := parseFlags(flags, args[1:]); err != nil {
 			return err
@@ -247,6 +331,9 @@ func run(args []string) error {
 		fmt.Printf("%s complete (%d planned files)\n", args[0], len(p.Files))
 		return nil
 	case "help", "-h", "--help":
+		if args[0] == "help" && len(args) == 2 {
+			return run([]string{args[1], "--help"})
+		}
 		fmt.Println(`jupgrade inspect [--repo DIR]
 jupgrade discover [--repo DIR] [--out MODEL.json] [build options]
 jupgrade resolve [--repo DIR] [--out POLICY.json] [--maven-repo CACHE]
@@ -257,8 +344,11 @@ jupgrade verify --plan PLAN.json [--java-home DIR] [--profiles LIST] [--offline]
 jupgrade rollback --plan PLAN.json
 jupgrade policy [--java 17|21|25] [--preset build|common]
 jupgrade recipes
+jupgrade diff --plan PLAN.json [--format unified|summary|json]
+jupgrade batch --manifest REPOSITORIES.json --out NEW_DIRECTORY [--dry-run|--resume]
+jupgrade completion <bash|zsh|fish>
 
-Policy options: --policy FILE, --dependency G:A=V, --plugin G:A=V,
+Policy options: --build maven|gradle|auto, --policy FILE, --dependency G:A=V, --plugin G:A=V,
 --parent G:A=V, --spring-boot VERSION, --maven VERSION [--maven-sha256 HEX],
 --gradle VERSION [--gradle-sha256 HEX], --gradle-plugin ID=V, --recipe ALIAS.
 Version rules are repeatable. Use --resolve-maven to capture cached parent/BOM models.

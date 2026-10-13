@@ -378,7 +378,7 @@ func InspectWithPolicy(root string, policy Policy) (Inspection, error) {
 	if err != nil {
 		return Inspection{}, err
 	}
-	build, err := detectBuild(root)
+	build, err := detectBuild(root, policy.Build)
 	if err != nil {
 		return Inspection{}, err
 	}
